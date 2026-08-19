@@ -27,3 +27,7 @@ _Avoid_: old data, outdated data, yesterday's weather
 **Refresh**:
 Fetching fresh forecast data — on launch, on pull-to-refresh, or on a ~30-minute timer that only runs while the tab is open and visible. There is no background refresh: a PWA has no scheduler and the Mind One's power management kills background work.
 _Avoid_: auto-update, background sync, periodic fetch
+
+**Metric quartet**:
+The four metric cards in the MVP cut: Feels Like, Wind, Humidity, Pressure — the two instruments (Wind/Pressure are the dials) plus the two most-referenced numbers. The full iOS metric grid (UV, Visibility, Sunrise/Sunset, Air Quality) stays post-v1.
+_Avoid_: metric grid, detail cards, modules
