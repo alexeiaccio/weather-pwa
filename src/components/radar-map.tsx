@@ -88,14 +88,23 @@ export const RadarMap = (props: {
   const activePath = (): string | undefined =>
     frames()[fi() % Math.max(1, frames().length)]?.path
 
-  // Animate frames while playing.
-  createEffect(() => {
-    if (!playing() || frames().length <= 1) return
-    const t = setInterval(
-      () => setFi((i) => (i + 1) % Math.max(1, frames().length)),
-      FRAME_MS,
-    )
-    onCleanup(() => clearInterval(t))
+  // Animate frames while playing. Solid 2 requires the two-fn createEffect form
+  // and doesn't allow onCleanup inside a bare effect, so the interval is created
+  // once on mount and reads the reactive flags on each tick.
+  let timer: ReturnType<typeof setInterval> | undefined
+  createEffect(
+    () => ref,
+    () => {
+      if (!ref || timer) return
+      timer = setInterval(() => {
+        if (playing()) {
+          setFi((i) => (i + 1) % Math.max(1, frames().length))
+        }
+      }, FRAME_MS)
+    },
+  )
+  onCleanup(() => {
+    if (timer) clearInterval(timer)
   })
 
   const centerPx = () => ({
