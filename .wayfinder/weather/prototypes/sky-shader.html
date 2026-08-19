@@ -1,0 +1,482 @@
+<!doctype html>
+<!--
+  WEATHER PWA · SKY SHADER SPIKE — THROWAWAY PROTOTYPE (W2 research)
+
+  Question: does a GPU fragment-shader sky (sun-angle + condition-keyed gradient
+  with soft animated cloud noise over time) read as the iOS Weather background
+  better than the static CSS gradient in main-screen.html?
+
+  Everything lives in THIS file: inline CSS + JS + GLSL. No tests, no build.
+
+  What it does
+  - Full-screen WebGL/WebGL2 fragment shader renders the sky on a single quad.
+  - Sky = vertical gradient keyed by sun angle + condition + day/dusk/night
+    interpolation (the W2 token model). Soft fbm cloud noise drifts slowly over
+    time, tinted by daylight. Optional sun disc + glow, stars at night.
+  - A fixed control bar (clearly NOT part of the art) lets you pick the
+    condition, drag the sun angle (0..180, 90 = noon), toggle an autoplay
+    day/night cycle, and drag directly on the sky to place the sun.
+  - If WebGL is unavailable it falls back to a static CSS gradient + a message.
+
+  Run:  open it directly (double-click) or
+        python3 -m http.server 8137   then   http://localhost:8137/sky-shader.html
+
+  Palette tokens (W2 research, section "Colors"):
+  - day steel blue  #4a7ba8 (top lighter ~#5b8fc0, base ~#3c658f)
+  - night navy      #101d2e (top #1a2b3d, base #0d1520)
+  - dusk            #2d5580
+  Condition families: clear=saturated blue / navy; partly/mostly cloudy=steel-blue→gray-blue;
+  rain=gray-blue darker base; thunderstorm=flat storm (#2b3b52→#1c2740); snow=pale slate
+  (#8299ad→#5c7185); fog=muted gray (#6f7d8c→#55626f); hot=warmer amber-tinted.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Weather PWA · sky shader spike (W2)</title>
+<style>
+  :root{
+    --ink:#fff;
+    --track:rgba(255,255,255,.18);
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#0d1520; font-family:var(--font); }
+  #sky{ position:fixed; inset:0; width:100vw; height:100dvh; display:block; touch-action:none; z-index:0; }
+  #fallback{ position:fixed; inset:0; z-index:0; display:none; }
+  /* ---------- "PROTOTYPE" tag: UI chrome, not part of the art ---------- */
+  .pill{
+    position:fixed; top:12px; left:12px; z-index:20; padding:6px 11px;
+    background:rgba(8,14,24,.55); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,.14); border-radius:999px;
+    color:#fff; font-size:10px; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+    pointer-events:none;
+  }
+  /* ---------- fixed control bar (tooling band, clearly outside the sky) ---------- */
+  #bar{
+    position:fixed; left:50%; bottom:14px; z-index:21; transform:translateX(-50%);
+    width:min(330px, calc(100vw - 24px));
+    background:rgba(8,14,24,.58); backdrop-filter:blur(16px) saturate(1.3); -webkit-backdrop-filter:blur(16px) saturate(1.3);
+    border:1px solid rgba(255,255,255,.13); border-radius:16px; box-shadow:0 10px 34px rgba(0,0,0,.38);
+    color:#fff; padding:12px 14px; font-size:12.5px; display:flex; flex-direction:column; gap:10px;
+  }
+  .row{ display:flex; align-items:center; gap:10px; }
+  .row > span{ min-width:76px; opacity:.72; font-size:10px; font-weight:650; text-transform:uppercase; letter-spacing:.07em; }
+  .row .val{ margin-left:auto; font-variant-numeric:tabular-nums; opacity:.95; font-weight:500; min-width:64px; text-align:right; }
+  #readout{
+    padding:7px 10px; border-radius:10px; background:rgba(255,255,255,.07);
+    font-size:11.5px; text-align:center; color:rgba(255,255,255,.92); font-variant-numeric:tabular-nums;
+  }
+  select{
+    flex:1; background:#0d1622; color:#fff; border:1px solid rgba(255,255,255,.16); border-radius:9px;
+    padding:5px 7px; font:inherit; font-size:12.5px; outline:none;
+  }
+  input[type=range]{ flex:1; height:22px; accent-color:#59a9ff; cursor:ew-resize; }
+  input[type=checkbox]{ accent-color:#59a9ff; width:16px; height:16px; cursor:pointer; }
+  #hint{ font-size:10.5px; opacity:.55; text-align:center; }
+</style>
+</head>
+<body>
+
+<canvas id="sky"></canvas>
+<div id="fallback"></div>
+
+<div class="pill">PROTOTYPE · WebGL sky shader spike (W2)</div>
+
+<div id="bar">
+  <div id="readout">—</div>
+  <div class="row">
+    <span>Condition</span>
+    <select id="cond"></select>
+  </div>
+  <div class="row">
+    <span>Sun angle</span>
+    <input id="sun" type="range" min="0" max="180" step="1" value="75">
+    <div class="val" id="sunVal">75°</div>
+  </div>
+  <div class="row">
+    <span>Autoplay</span>
+    <input id="auto" type="checkbox">
+    <label for="auto" style="opacity:.85">Sun animates through a full day/night cycle</label>
+  </div>
+  <div id="hint">drag on the sky to place the sun · slider is 0–180°, 90° = noon, ends = horizon</div>
+</div>
+
+<script>
+"use strict";
+/* ================================================================== */
+/*  PALETTE TABLE — W2 tokens. One entry per condition.               */
+/*  day / dusk / night = { top, horizon, base } gradient stops.       */
+/*  flat.* = flat-sky override color (storms); warm = sun disc amount· */
+/*  cloud = cloud density; stars = star-field amount (night).         */
+/* ================================================================== */
+const CONDITIONS = [
+  { id:"clear", label:"Clear",
+    day:{top:"#5ea9d8", horizon:"#8fc3ea", base:"#406fa8"},
+    dusk:{top:"#2f5d8f", horizon:"#c98a55", base:"#274a75"},
+    night:{top:"#14243a", horizon:"#1d3350", base:"#0a111f"},
+    warm:.7, cloud:.12, flat:0, stars:1 },
+  { id:"partly", label:"Partly Cloudy",
+    day:{top:"#7aa0c2", horizon:"#a9c4da", base:"#536f8f"},
+    dusk:{top:"#4a6f93", horizon:"#b08a60", base:"#3a587a"},
+    night:{top:"#1c2c42", horizon:"#243750", base:"#0f1826"},
+    warm:.4, cloud:.45, flat:0, stars:.8 },
+  { id:"overcast", label:"Overcast",
+    day:{top:"#7d91a4", horizon:"#9fb0c0", base:"#57697c"},
+    dusk:{top:"#5a6d80", horizon:"#8e8574", base:"#47586a"},
+    night:{top:"#222f3e", horizon:"#2a3a4c", base:"#131c28"},
+    warm:.05, cloud:.85, flat:.15, stars:.2 },
+  { id:"rain", label:"Rain",
+    day:{top:"#607587", horizon:"#7d92a3", base:"#3d4a58"},
+    dusk:{top:"#485a6c", horizon:"#6a6a64", base:"#333f4d"},
+    night:{top:"#1c2735", horizon:"#243242", base:"#0f151f"},
+    warm:.05, cloud:.9, flat:.25, flatDay:"#3d4a58", flatNight:"#0f151f", stars:.05 },
+  { id:"storm", label:"Thunderstorm",
+    day:{top:"#2f4058", horizon:"#3a4d66", base:"#223046"},
+    dusk:{top:"#2a3a50", horizon:"#35465e", base:"#1f2b3f"},
+    night:{top:"#1c2740", horizon:"#24314a", base:"#141b2c"},
+    warm:0, cloud:.9, flat:.9, flatDay:"#2b3b52", flatNight:"#1c2740", stars:.05 },
+  { id:"snow", label:"Snow",
+    day:{top:"#93a9bd", horizon:"#c3d2de", base:"#6c8194"},
+    dusk:{top:"#6f8498", horizon:"#b8b0a0", base:"#597082"},
+    night:{top:"#27374a", horizon:"#32445a", base:"#17212e"},
+    warm:.1, cloud:.8, flat:.1, stars:.5 },
+  { id:"fog", label:"Fog",
+    day:{top:"#7a8896", horizon:"#98a5b2", base:"#5b6875"},
+    dusk:{top:"#5c6a78", horizon:"#8a8476", base:"#47535f"},
+    night:{top:"#28333f", horizon:"#303c4a", base:"#182029"},
+    warm:0, cloud:.95, flat:.5, stars:.1 },
+  { id:"hot", label:"Hot",
+    day:{top:"#85a3c0", horizon:"#e0b878", base:"#6f6a52"},
+    dusk:{top:"#5d7ea0", horizon:"#e09a5a", base:"#524f42"},
+    night:{top:"#1e2c40", horizon:"#2c3d55", base:"#111a28"},
+    warm:.85, cloud:.1, flat:0, stars:.7 },
+  { id:"night", label:"Night (forced)",
+    day:{top:"#14243a", horizon:"#1d3350", base:"#0a111f"},
+    dusk:{top:"#14243a", horizon:"#22374f", base:"#0a111f"},
+    night:{top:"#101d2e", horizon:"#22374f", base:"#070d17"},
+    warm:.15, cloud:.12, flat:0, stars:1 },
+];
+
+const HORIZON = 0.16;          // screen-space horizon in uv.y (0 = bottom), shared JS/GLSL
+const AUTO_PERIOD = 60;        // seconds for a full autoplay day/night cycle
+
+/* ================= GLSL shaders ================= */
+// Shader body is shared between WebGL2 (GLSL ES 3.00) and WebGL1 (GLSL ES 1.00).
+// %COLOR% resolves to fragColor / gl_FragColor depending on the GL version.
+const FRAG_BODY = `
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_dayMix;      // 0..1 daylight fraction (from sun elevation)
+uniform float u_duskMix;     // 0..1 near-horizon twilight fraction
+uniform float u_nightMix;    // 0..1 night fraction
+uniform vec3  u_colTop;      // zenith color      (already day/dusk/night blended)
+uniform vec3  u_colHorizon;  // horizon-band color
+uniform vec3  u_colBase;     // below-horizon base color
+uniform vec3  u_colFlat;     // flat-sky override color (storms)
+uniform float u_flatness;    // 0 = textured gradient, 1 = flat sky
+uniform float u_warmSun;     // sun disc visibility
+uniform float u_moon;        // faint moon glow at night
+uniform float u_cloudAmt;    // cloud density per condition
+uniform float u_stars;       // star-field amount
+uniform vec2  u_sun;         // sun screen position (uv space, y-up)
+uniform float u_sunAlt;      // sun elevation 0 (horizon) .. 1 (zenith)
+
+float hash21(vec2 p){
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), u.x),
+             mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p){                       // 3-octave value noise
+  float a = 0.5, tot = 0.0, amp = 0.0;
+  for (int i = 0; i < 3; i++){
+    tot += a * vnoise(p);
+    p = p * 2.06 + vec2(17.0, 9.0);
+    amp += a;
+    a *= 0.5;
+  }
+  return tot / amp;
+}
+float star(vec2 p, float seed){
+  vec2 g = floor(p);
+  float h = hash21(g + seed);
+  float tw = 0.5 + 0.5 * sin(u_time * (1.0 + h * 2.0) + h * 40.0); // gentle twinkle
+  return step(0.995, h) * tw;
+}
+
+void main(){
+  float aspect = u_res.x / u_res.y;
+  vec2  p = v_uv * vec2(aspect, 1.0);           // aspect-corrected coords
+  float horizonY = ${HORIZON.toFixed(2)};
+
+  // ---- vertical gradient: top -> horizon, horizon -> base ----
+  vec3 sky;
+  if (v_uv.y > horizonY){
+    float f = clamp((v_uv.y - horizonY) / (1.0 - horizonY), 0.0, 1.0);
+    sky = mix(u_colHorizon, u_colTop, pow(f, 0.85));
+  } else {
+    float f = clamp(v_uv.y / horizonY, 0.0, 1.0);
+    sky = mix(u_colBase, u_colHorizon, pow(f, 1.15));
+  }
+
+  // ---- horizon haze + warm dusk bloom ----
+  float hz = exp(-pow((v_uv.y - horizonY) * 9.0, 2.0));
+  sky += u_colHorizon * hz * 0.18;
+  sky += vec3(1.0, 0.82, 0.55) * hz * 0.10 * u_duskMix;
+
+  // ---- stars (night only) ----
+  float starMask = smoothstep(0.72, 0.95, u_nightMix) * u_stars;
+  sky += vec3(1.0) * star(v_uv * vec2(190.0 * aspect, 95.0), 3.7) * starMask;
+
+  // ---- sun disc + glow (moon-glow variant at night) ----
+  vec2  sp   = (u_sun - v_uv) * vec2(aspect, 1.0);
+  float sd   = length(sp);
+  float core = exp(-sd * sd * 260.0);
+  float glow = exp(-sd * sd * 28.0);
+  // disc color: golden at low sun, white-ish at noon; moon-pale at night
+  vec3 sunTint = mix(vec3(1.0, 0.86, 0.62), vec3(1.0, 0.97, 0.90), smoothstep(0.0, 0.55, u_sunAlt));
+  sunTint = mix(sunTint, vec3(0.80, 0.88, 1.0), u_nightMix * 0.7);
+  sky += sunTint * (core * 0.95 + glow * 0.30) * u_warmSun * (1.0 - u_flatness);
+  sky += vec3(0.80, 0.88, 1.0) * (core * 0.5 + glow * 0.35) * u_moon;
+
+  // ---- soft animated clouds: two fbm layers drifting at different speeds ----
+  float t = u_time;
+  float c1 = fbm(p * 1.6 + vec2(t * 0.020, 0.0));
+  c1 = smoothstep(0.42, 0.80, c1);
+  float warp = fbm(vec2(p.y * 1.4 + t * 0.012, p.x * 0.7));
+  float c2 = fbm(p * 2.4 + vec2(t * 0.034, 0.0) + warp * 1.1);
+  c2 = smoothstep(0.46, 0.86, c2);
+  float cloud = mix(c1 * 0.5, c2, 0.5) * u_cloudAmt;
+  cloud *= 0.55 + 0.75 * smoothstep(0.04, 0.30, v_uv.y);   // fewer clouds below horizon
+  float lit  = 0.30 + 0.70 * u_dayMix;                     // clouds dim at night
+  vec3 cloudC = mix(vec3(0.23, 0.30, 0.40), vec3(1.02, 1.05, 1.10), u_dayMix);
+  cloudC += sunTint * glow * u_warmSun * 0.35;             // sunlit clouds near the disc
+  cloudC *= lit;
+  sky = mix(sky, cloudC, clamp(cloud * 0.85, 0.0, 1.0));
+
+  // ---- flat-sky override (thunderstorm ships a flat sky in the W2 research) ----
+  sky = mix(sky, u_colFlat, u_flatness);
+
+  // gentle tone map so the sun core never clips to a white blowout
+  sky = sky / (sky + vec3(0.55)) * 1.06;
+
+  %COLOR% = vec4(sky, 1.0);
+}`;
+
+function shaderSource(es3){
+  const vert = (es3 ? "#version 300 es\n" : "")
+    + "precision highp float;\n"
+    + (es3 ? "in vec2 a_pos;\nout vec2 v_uv;\n" : "attribute vec2 a_pos;\nvarying vec2 v_uv;\n")
+    + "void main(){ v_uv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+  const frag = (es3 ? "#version 300 es\nprecision highp float;\nin vec2 v_uv;\nout vec4 fragColor;\n"
+                    : "precision highp float;\nvarying vec2 v_uv;\n")
+    + FRAG_BODY.replace("%COLOR%", es3 ? "fragColor" : "gl_FragColor");
+  return { vert, frag };
+}
+
+/* ================= WebGL plumbing ================= */
+function compile(gl, type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+    console.error("shader compile failed:", gl.getShaderInfoLog(sh));
+    return null;
+  }
+  return sh;
+}
+
+let glRef = null, prog = null, U = null, quadBuf = null;
+
+function initGL(canvas){
+  const opts = { antialias:false, depth:false, stencil:false, alpha:false,
+                 preserveDrawingBuffer:true, powerPreference:"default" };
+  let gl = canvas.getContext("webgl2", opts);
+  const es3 = !!gl;
+  if (!gl) gl = canvas.getContext("webgl", opts) || canvas.getContext("experimental-webgl", opts);
+  if (!gl) return null;
+
+  const { vert, frag } = shaderSource(es3);
+  const vs = compile(gl, gl.VERTEX_SHADER, vert);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, frag);
+  if (!vs || !fs) return null;
+
+  const p = gl.createProgram();
+  gl.attachShader(p, vs); gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)){
+    console.error("program link failed:", gl.getProgramInfoLog(p));
+    return null;
+  }
+  gl.useProgram(p);
+
+  quadBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(p, "a_pos");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  const names = ["u_res","u_time","u_dayMix","u_duskMix","u_nightMix","u_colTop","u_colHorizon",
+                 "u_colBase","u_colFlat","u_flatness","u_warmSun","u_moon","u_cloudAmt","u_stars",
+                 "u_sun","u_sunAlt"];
+  U = {};
+  for (const n of names) U[n] = gl.getUniformLocation(p, n);
+
+  glRef = gl; prog = p;
+  return gl;
+}
+
+function resize(){
+  const c = document.getElementById("sky");
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(c.clientWidth  * dpr), h = Math.floor(c.clientHeight * dpr);
+  if (c.width !== w || c.height !== h){ c.width = w; c.height = h; }
+  if (glRef) glRef.viewport(0, 0, c.width, c.height);
+}
+
+/* ================= color model ================= */
+const hex2rgb = h => [parseInt(h.slice(1,3),16)/255, parseInt(h.slice(3,5),16)/255, parseInt(h.slice(5,7),16)/255];
+const ss = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+
+// sunAlt = elevation: 1 at zenith (noon), 0 at horizon, negative = below horizon (night).
+function model(condIdx, sunAlt, forceNight){
+  const c = CONDITIONS[condIdx];
+  if (forceNight) sunAlt = -1;
+  const dm = ss(-0.02, 0.34, sunAlt);          // daylight
+  const du = (1 - dm) * ss(0.0, 0.30, sunAlt); // dusk band near the horizon
+  const nm = Math.max(0, 1 - dm - du);         // night
+  const bl = (a, b, d) => a.map((v, i) => v * dm + b[i] * du + d[i] * nm);
+  const top   = bl(hex2rgb(c.day.top),   hex2rgb(c.dusk.top),   hex2rgb(c.night.top));
+  const horiz = bl(hex2rgb(c.day.horizon), hex2rgb(c.dusk.horizon), hex2rgb(c.night.horizon));
+  const base  = bl(hex2rgb(c.day.base),  hex2rgb(c.dusk.base),  hex2rgb(c.night.base));
+  const fD = hex2rgb(c.flatDay || c.day.base), fN = hex2rgb(c.flatNight || c.night.base);
+  const flat = fD.map((v, i) => v * dm + fN[i] * (du + nm));
+  return {
+    dm, du, nm,
+    top, horiz, base, flat,
+    warm: c.warm * ss(-0.02, 0.06, sunAlt),
+    moon: nm * (c.stars || 0) * 0.18,
+    cloud: c.cloud, flatness: c.flat, stars: c.stars,
+  };
+}
+
+/* ================= animation state ================= */
+const canvas = document.getElementById("sky");
+const fallbackEl = document.getElementById("fallback");
+const readout = document.getElementById("readout");
+const select  = document.getElementById("cond");
+const slider  = document.getElementById("sun");
+const sunVal  = document.getElementById("sunVal");
+const autoBtn = document.getElementById("auto");
+
+for (const c of CONDITIONS) select.add(new Option(c.label, String(CONDITIONS.indexOf(c))));
+
+let autoplay = true;
+let theta = 75;                  // current sun angle in degrees (slider domain 0..180)
+autoBtn.checked = autoplay;
+
+const PHASE = m => m.nm > m.du && m.nm >= m.dm ? "Night" : (m.dm > m.du ? "Day" : "Dusk");
+
+function computeSky(tMs, alt){  // shared by GL path and CSS fallback
+  const m = model(+select.value, alt, CONDITIONS[+select.value].id === "night");
+  const visible = Math.max(0, alt);
+  const sunY = HORIZON + (1 - HORIZON) * Math.pow(visible, 0.8) * 0.72;
+  // update readout
+  const cond = CONDITIONS[+select.value];
+  const altDeg = Math.round(Math.asin(Math.max(-1, Math.min(1, alt))) * 180 / Math.PI);
+  readout.textContent =
+    `${cond.label} · sun elev ${altDeg >= 0 ? "+" : "−"}${Math.abs(altDeg)}° · ${PHASE(m)} · ` +
+    `day ${(m.dm * 100) | 0}%`;
+  return m;
+}
+
+function draw(tMs){
+  if (autoplay){
+    // full day/night cycle: 0..180° = sun above horizon, 180..360° = below (night)
+    theta = ((tMs / 1000) % AUTO_PERIOD) / AUTO_PERIOD * 360;
+  }
+  const alt = Math.sin(theta * Math.PI / 180);
+  if (glRef){
+    const m = computeSky(tMs, alt);
+    const visible = Math.max(0, alt);
+    const sunY = HORIZON + (1 - HORIZON) * Math.pow(visible, 0.8) * 0.72;
+    glRef.uniform2f(U.u_res, canvas.width, canvas.height);
+    glRef.uniform1f(U.u_time, tMs / 1000);
+    glRef.uniform1f(U.u_dayMix, m.dm); glRef.uniform1f(U.u_duskMix, m.du); glRef.uniform1f(U.u_nightMix, m.nm);
+    for (const [k, v] of [["u_colTop", m.top], ["u_colHorizon", m.horiz], ["u_colBase", m.base], ["u_colFlat", m.flat]])
+      glRef.uniform3f(U[k], v[0], v[1], v[2]);
+    glRef.uniform1f(U.u_flatness, m.flatness);
+    glRef.uniform1f(U.u_warmSun, m.warm); glRef.uniform1f(U.u_moon, m.moon);
+    glRef.uniform1f(U.u_cloudAmt, m.cloud); glRef.uniform1f(U.u_stars, m.stars);
+    glRef.uniform2f(U.u_sun, 0.5, sunY); glRef.uniform1f(U.u_sunAlt, visible);
+    glRef.drawArrays(glRef.TRIANGLES, 0, 3);
+  } else {
+    // graceful static fallback: recolor a CSS gradient from the same model
+    const m = computeSky(tMs, alt);
+    const rgb = v => `rgb(${v.map(x => (x * 255) | 0).join(",")})`;
+    fallbackEl.style.background =
+      `linear-gradient(${rgb(m.top)}, ${rgb(m.horiz)} 55%, ${rgb(m.base)})`;
+  }
+  if (autoplay){
+    // keep the slider pinned to the day arc while autoplay runs (theta dips below at night)
+    slider.value = Math.min(180, Math.max(0, theta));
+  }
+  sunVal.textContent = Math.round(theta) + "°";
+  requestAnimationFrame(draw);
+}
+
+/* ================= input wiring ================= */
+slider.addEventListener("input", () => {
+  autoplay = false; autoBtn.checked = false;
+  theta = +slider.value;
+  sunVal.textContent = theta + "°";
+});
+autoBtn.addEventListener("change", () => { autoplay = autoBtn.checked; });
+
+// Drag/click on the sky places the sun (y above the horizon ↦ angle). Disables autoplay.
+let dragging = false;
+const pickFromPointer = e => {
+  const r = canvas.getBoundingClientRect();
+  const y = (e.clientY - r.top) / r.height;            // 0 = top of viewport
+  const horizonScreen = 1 - HORIZON;                   // uv → screen: horizon at 0.84
+  const altGuess = Math.max(0, Math.min(1, 1 - y / horizonScreen)); // 1 top (zenith) → 0 horizon
+  autoplay = false; autoBtn.checked = false;
+  theta = Math.max(0, Math.min(90, Math.asin(altGuess) * 180 / Math.PI)); // elevation → morning side 0..90° 
+  slider.value = theta;
+  sunVal.textContent = Math.round(theta) + "°";
+};
+canvas.addEventListener("pointerdown", e => { dragging = true; pickFromPointer(e); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", e => { if (dragging) pickFromPointer(e); });
+canvas.addEventListener("pointerup",   e => { dragging = false; });
+canvas.addEventListener("pointercancel", () => { dragging = false; });
+</script>
+<script>
+/* boot + fallback */
+(function boot(){
+  // populate options is above; here: try GL, else CSS fallback with a note
+  const c = document.getElementById("sky");
+  const ok = initGL(c);
+  if (!ok){
+    canvas.style.display = "none";
+    const f = document.getElementById("fallback");
+    f.style.display = "block";
+    const note = document.createElement("div");
+    note.textContent = "WebGL unavailable — showing a static CSS-gradient fallback of the same palette model.";
+    note.style.cssText = "position:absolute;bottom:200px;left:50%;transform:translateX(-50%);z-index:5;" +
+      "color:#fff;background:rgba(8,14,24,.6);padding:8px 12px;border-radius:10px;font:12px -apple-system,sans-serif;";
+    f.appendChild(note);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

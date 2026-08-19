@@ -2,7 +2,15 @@ import { createEffect, createMemo, createSignal, type Accessor } from 'solid-js'
 import { fetchForecast } from './weather/api.ts'
 import type { Forecast as ForecastT } from './weather/schema.ts'
 import { cacheKey, dayKey } from './weather/cache.ts'
-import { readForecast, readPin, writeForecast, writePin } from './store/db.ts'
+import {
+  addPlace,
+  listPlaces,
+  readForecast,
+  removePlace,
+  selectPlace,
+  selectedPlace,
+  writeForecast,
+} from './store/db.ts'
 import { run } from './runtime.ts'
 import { getPosition } from './geolocation.ts'
 import {
@@ -30,25 +38,40 @@ export interface WeatherApi {
   readonly data: Accessor<ForecastT | null>
   readonly stale: Accessor<boolean>
   readonly offline: Accessor<boolean>
-  readonly pin: (place: Place) => void
+  /** Saved places for the city list. */
+  readonly places: Accessor<readonly Place[]>
+  /** The active saved Place, or null when showing Current location / search. */
+  readonly selected: Accessor<Place | null>
+  readonly loaded: Accessor<boolean>
+  readonly add: (place: Place) => void
+  readonly remove: (id: number) => void
+  readonly select: (id: number | null) => void
 }
 
-/** Wire place bootstrap (W3) + forecast SWR (W6) against IndexedDB (W7). */
+/** Wire the saved-places list (stretch) + place bootstrap + forecast SWR. */
 export const useWeather = (): WeatherApi => {
   const [geo, setGeo] = createSignal<GeoPosition>({
     ok: false,
     latitude: 0,
     longitude: 0,
   })
-  const [pin, setPin] = createSignal<Place | null>(null)
-  const [pinLoaded, setPinLoaded] = createSignal(false)
+  const [places, setPlaces] = createSignal<readonly Place[]>([])
+  const [selectionId, setSelectionId] = createSignal<number | null>(null)
+  const [loaded, setLoaded] = createSignal(false)
   const [forecast, setForecast] = createSignal<ForecastSignal>({
     kind: 'loading',
   })
 
-  // W3 bootstrap as a memo so consumers read it reactively in JSX.
-  const bootstrap = createMemo(() => resolveBootstrap(pin(), geo()))
-  // Reactive derived views of the forecast signal.
+  const selected = createMemo(
+    () => places().find((p) => p.id === selectionId()) ?? null,
+  )
+
+  const bootstrap = createMemo((): Bootstrap => {
+    const sel = selected()
+    if (sel) return { kind: 'pin', place: sel }
+    return resolveBootstrap(null, geo())
+  })
+
   const data = createMemo(() => {
     const s = forecast()
     return s.kind === 'ok' || s.kind === 'stale' ? s.forecast : null
@@ -59,24 +82,30 @@ export const useWeather = (): WeatherApi => {
     return s.kind === 'stale' ? s.offline : false
   })
 
-  // Load the pinned place from IndexedDB once on mount.
+  // Load saved places + the active selection once on mount.
   createEffect(
     () => undefined,
     () => {
-      void run(readPin)
-        .then((place) => {
-          setPin(place)
-          setPinLoaded(true)
-        })
-        .catch(() => setPinLoaded(true))
+      void (async () => {
+        try {
+          const [saved, active] = await Promise.all([
+            run(listPlaces()).catch(() => [] as Place[]),
+            run(selectedPlace()).catch(() => undefined),
+          ])
+          setPlaces(saved)
+          setSelectionId(active ? active.id : null)
+        } finally {
+          setLoaded(true)
+        }
+      })()
     },
   )
 
-  // Geolocate only once the pin is loaded and there is none (W3 rule).
+  // Geolocate only once loaded and no place is selected (W3 rule).
   createEffect(
-    () => `${pinLoaded()}:${pin() ? 'p' : 'n'}`,
+    () => `${loaded()}:${selected() ? 'y' : 'n'}`,
     () => {
-      if (pinLoaded() && !pin()) {
+      if (loaded() && !selected()) {
         void getPosition().then(setGeo)
       }
     },
@@ -122,11 +151,36 @@ export const useWeather = (): WeatherApi => {
     })()
   })
 
-  const pinPlace = (place: Place): void => {
-    void run(writePin(place))
-      .then(() => setPin(place))
-      .catch(() => setPin(place))
+  const add = (place: Place): void => {
+    setPlaces((prev) =>
+      prev.some((p) => p.id === place.id) ? prev : [...prev, place],
+    )
+    setSelectionId(place.id)
+    void run(addPlace(place)).catch(() => undefined)
   }
 
-  return { forecast, bootstrap, data, stale, offline, pin: pinPlace }
+  const remove = (id: number): void => {
+    setPlaces((prev) => prev.filter((p) => p.id !== id))
+    if (selectionId() === id) setSelectionId(null)
+    void run(removePlace(id)).catch(() => undefined)
+  }
+
+  const select = (id: number | null): void => {
+    setSelectionId(id)
+    void run(selectPlace(id)).catch(() => undefined)
+  }
+
+  return {
+    forecast,
+    bootstrap,
+    data,
+    stale,
+    offline,
+    places,
+    selected,
+    loaded,
+    add,
+    remove,
+    select,
+  }
 }

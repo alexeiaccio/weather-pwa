@@ -10,20 +10,32 @@ import { Place } from '../place/schema.ts'
 import { Forecast } from '../weather/schema.ts'
 
 const DB_NAME = 'weather'
-const PLACES_STORE = 'places'
+const PLACES_STORE_V1 = 'places'
 const FORECAST_STORE = 'forecast_cache'
+const SAVED_STORE = 'saved_places'
+const SELECTION_STORE = 'selection'
 
 /**
- * Single-pin persistence (W3/W7): one `places` row keyed `pinned`, plus a
- * forecast cache keyed by place+day+unit (W6/W7). Backed by app-owned
- * IndexedDB; the browser owns the data, the Worker is a static shell.
+ * v1 storage: a single pinned Place plus a forecast cache (W3/W7). v2 extends
+ * it to a saved-places list (the city-list stretch goal) with an active
+ * selection; the v1 pinned place becomes the first saved place.
  */
-const PlaceRow = Schema.Struct({ key: Schema.Literal('pinned'), place: Place })
+const PinRowV1 = Schema.Struct({ key: Schema.Literal('pinned'), place: Place })
 const ForecastRow = Schema.Struct({ key: Schema.String, forecast: Forecast })
 
-const PlacesTable = IndexedDbTable.make({
-  name: PLACES_STORE,
-  schema: PlaceRow,
+const SavedPlaceRow = Schema.Struct({
+  key: Schema.String, // String(place.id)
+  place: Place,
+  order: Schema.Int,
+})
+const SelectionRow = Schema.Struct({
+  key: Schema.Literal('selection'),
+  id: Schema.optional(Schema.Number),
+})
+
+const PlacesTableV1 = IndexedDbTable.make({
+  name: PLACES_STORE_V1,
+  schema: PinRowV1,
   keyPath: 'key',
 })
 const ForecastTable = IndexedDbTable.make({
@@ -32,7 +44,24 @@ const ForecastTable = IndexedDbTable.make({
   keyPath: 'key',
 })
 
-const V1 = IndexedDbVersion.make(PlacesTable, ForecastTable)
+const SavedPlacesTable = IndexedDbTable.make({
+  name: SAVED_STORE,
+  schema: SavedPlaceRow,
+  keyPath: 'key',
+})
+const SelectionTable = IndexedDbTable.make({
+  name: SELECTION_STORE,
+  schema: SelectionRow,
+  keyPath: 'key',
+})
+
+const V1 = IndexedDbVersion.make(PlacesTableV1, ForecastTable)
+const V2 = IndexedDbVersion.make(
+  PlacesTableV1, // kept (unused going forward) so the migration can read it
+  ForecastTable,
+  SavedPlacesTable,
+  SelectionTable,
+)
 
 const WeatherDb = IndexedDbDatabase.make(
   V1,
@@ -40,8 +69,36 @@ const WeatherDb = IndexedDbDatabase.make(
     void,
     IndexedDbDatabase.IndexedDbDatabaseError
   > {
-    yield* api.createObjectStore(PLACES_STORE)
+    yield* api.createObjectStore(PLACES_STORE_V1)
     yield* api.createObjectStore(FORECAST_STORE)
+  }),
+).add(
+  V2,
+  // oxlint-disable-next-line effecttsgo/suspend
+  Effect.fn('weather.storage.v2SavedPlaces')(function* (
+    from: IndexedDbDatabase.Transaction<any>,
+    to: IndexedDbDatabase.Transaction<any>,
+  ): Effect.fn.Return<
+    void,
+    | IndexedDbQueryBuilder.IndexedDbQueryError
+    | IndexedDbDatabase.IndexedDbDatabaseError
+  > {
+    yield* to.createObjectStore(SAVED_STORE)
+    yield* to.createObjectStore(SELECTION_STORE)
+    const fromAny = from as any
+    // Migration reads/writes cross a schema boundary, so the dynamic transaction
+    // is deliberately untyped here.
+    const pins = yield* fromAny.from(PLACES_STORE_V1).select().equals('pinned')
+    const pin = pins[0]?.place
+    if (pin) {
+      const toAny = to as any
+      yield* toAny
+        .from(SAVED_STORE)
+        .upsert({ key: String(pin.id), place: pin, order: 0 })
+      yield* toAny
+        .from(SELECTION_STORE)
+        .upsert({ key: 'selection', id: pin.id })
+    }
   }),
 )
 
@@ -65,8 +122,7 @@ const withDb = <A, E>(
     const qb = yield* WeatherDb.getQueryBuilder
     return yield* use(qb)
   }).pipe(
-    // local: true — one connection per operation (browser tests drop the DB
-    // between cases).
+    // local: true — one connection per operation (browser tests drop the DB).
     // oxlint-disable-next-line effecttsgo/strict-effect-provide
     Effect.provide(WeatherDbLayer, { local: true }),
   )
@@ -75,14 +131,7 @@ type StorageError =
   | IndexedDbQueryBuilder.IndexedDbQueryError
   | IndexedDbDatabase.IndexedDbDatabaseError
 
-export const readPin: Effect.Effect<Place | null, StorageError> = withDb(
-  (qb) => qb.from(PLACES_STORE).select().equals('pinned'),
-).pipe(Effect.map((rows) => rows[0]?.place ?? null))
-
-export const writePin = (
-  place: Place,
-): Effect.Effect<void, StorageError> =>
-  withDb((qb) => qb.from(PLACES_STORE).upsert({ key: 'pinned', place }))
+// --- forecast cache (unchanged) ---
 
 export const readForecast = (
   key: string,
@@ -96,3 +145,58 @@ export const writeForecast = (
   forecast: Forecast,
 ): Effect.Effect<void, StorageError> =>
   withDb((qb) => qb.from(FORECAST_STORE).upsert({ key, forecast }))
+
+// --- saved places + selection (city list) ---
+
+/** All saved places, ordered by the order they were added. */
+export const listPlaces = (): Effect.Effect<Place[], StorageError> =>
+  withDb((qb) => qb.from(SAVED_STORE).select()).pipe(
+    Effect.map((rows) =>
+      [...rows].sort((a, b) => a.order - b.order).map((r) => r.place),
+    ),
+  )
+
+export const getPlace = (
+  id: number,
+): Effect.Effect<Place | undefined, StorageError> =>
+  withDb((qb) => qb.from(SAVED_STORE).select().equals(String(id))).pipe(
+    Effect.map((rows) => rows[0]?.place),
+  )
+
+export const addPlace = (place: Place): Effect.Effect<void, StorageError> =>
+  Effect.gen(function* () {
+    const count = yield* withDb((qb) => qb.from(SAVED_STORE).count())
+    yield* withDb((qb) =>
+      qb
+        .from(SAVED_STORE)
+        .upsert({ key: String(place.id), place, order: count }),
+    )
+    yield* selectPlace(place.id)
+  })
+
+export const removePlace = (id: number): Effect.Effect<void, StorageError> =>
+  withDb((qb) => qb.from(SAVED_STORE).delete().equals(String(id)))
+
+/** The active saved-place id, or null when "Current location" is active. */
+export const selectedId = (): Effect.Effect<number | null, StorageError> =>
+  withDb((qb) => qb.from(SELECTION_STORE).select().equals('selection')).pipe(
+    Effect.map((rows) => rows[0]?.id ?? null),
+  )
+
+/** The active saved Place, or undefined when none is selected. */
+export const selectedPlace = (): Effect.Effect<
+  Place | undefined,
+  StorageError
+> =>
+  selectedId().pipe(
+    Effect.flatMap((id) =>
+      id === null ? Effect.succeed(undefined) : getPlace(id),
+    ),
+  )
+
+export const selectPlace = (
+  id: number | null,
+): Effect.Effect<void, StorageError> =>
+  withDb((qb) =>
+    qb.from(SELECTION_STORE).upsert({ key: 'selection', id: id ?? undefined }),
+  )

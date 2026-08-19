@@ -11,6 +11,7 @@ import { APP_VERSION } from '../lib/version.ts'
 import { HourlyGraph } from '../components/hourly-graph.tsx'
 import { TenDay } from '../components/ten-day.tsx'
 import { PlaceSearch } from '../components/place-search.tsx'
+import { PlacesPanel } from '../components/places-panel.tsx'
 import type { Bootstrap } from '../lib/place/store.ts'
 import type { Forecast as ForecastT } from '../lib/weather/schema.ts'
 
@@ -46,6 +47,7 @@ const ForecastView = (props: {
   stale: boolean
   offline: boolean
   onEdit: () => void
+  onOpenList: () => void
 }): JSX.Element => {
   const cur = props.f.current
   const title =
@@ -55,6 +57,14 @@ const ForecastView = (props: {
       class="mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
       style={{ background: skyStyle(props.f) }}
     >
+      <button
+        type="button"
+        aria-label="Saved places"
+        onClick={props.onOpenList}
+        class="fixed top-4 left-4 tap rounded-full bg-white/15 px-3 py-2 text-white backdrop-blur-md hover:bg-white/25"
+      >
+        ☰
+      </button>
       <div class="text-center">
         <button
           type="button"
@@ -114,12 +124,22 @@ const ForecastView = (props: {
 export default function MainScreen(): JSX.Element {
   const w = useWeather()
   const [editing, setEditing] = createSignal(false)
+  const [showPlaces, setShowPlaces] = createSignal(false)
   const b = w.bootstrap
   const bKind = (): Bootstrap['kind'] => b().kind
   const viewing = (): boolean => !editing() && bKind() !== 'search'
 
   return (
     <div data-testid="weather-screen" class="min-h-full">
+      <PlacesPanel
+        open={showPlaces()}
+        places={w.places()}
+        selected={w.selected()}
+        onClose={() => setShowPlaces(false)}
+        onSelect={(id) => w.select(id)}
+        onRemove={(id) => w.remove(id)}
+        onAdd={(place) => w.add(place)}
+      />
       <Show
         when={viewing()}
         fallback={
@@ -132,7 +152,7 @@ export default function MainScreen(): JSX.Element {
             </p>
             <PlaceSearch
               onSelect={(place) => {
-                w.pin(place)
+                w.add(place)
                 setEditing(false)
               }}
             />
@@ -167,6 +187,7 @@ export default function MainScreen(): JSX.Element {
               stale={w.stale()}
               offline={w.offline()}
               onEdit={() => setEditing(true)}
+              onOpenList={() => setShowPlaces(true)}
             />
           )}
         </Show>

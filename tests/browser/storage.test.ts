@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, test } from 'vitest'
 import {
+  addPlace,
+  listPlaces,
   readForecast,
-  readPin,
+  removePlace,
+  selectedPlace,
+  selectedId,
+  selectPlace,
   writeForecast,
-  writePin,
 } from '../../src/lib/store/db'
 import { run } from '../../src/lib/runtime'
 import type { Place } from '../../src/lib/place/schema'
@@ -19,11 +23,19 @@ const clearDb = (): Promise<void> =>
     req.onblocked = () => resolve()
   })
 
-const PLACE: Place = {
+const MOSCOW: Place = {
   id: 524901,
   name: 'Moscow',
   latitude: 55.7558,
   longitude: 37.6173,
+  country: 'Russia',
+  timezone: 'Europe/Moscow',
+}
+const SPB: Place = {
+  id: 498817,
+  name: 'St Petersburg',
+  latitude: 59.9311,
+  longitude: 30.3609,
   country: 'Russia',
   timezone: 'Europe/Moscow',
 }
@@ -44,26 +56,52 @@ const FORECAST: Forecast = {
   daily: [{ date: '2026-08-19', code: 3, max: 24, min: 8, precipProbMax: 40 }],
 }
 
-describe('IndexedDB weather store (W7)', () => {
+describe('IndexedDB weather store (W7) — saved cities', () => {
   beforeEach(clearDb)
 
-  test('single pin roundtrips', async () => {
-    expect(await run(readPin)).toBeNull()
-    await run(writePin(PLACE))
-    expect(await run(readPin)).toEqual(PLACE)
-    // writing again overwrites the single pinned row
-    await run(writePin({ ...PLACE, name: 'St Petersburg' }))
-    expect((await run(readPin))?.name).toBe('St Petersburg')
+  test('saved places list grows in add order and selects the new one', async () => {
+    expect(await run(listPlaces())).toEqual([])
+    expect(await run(selectedId())).toBeNull()
+
+    await run(addPlace(MOSCOW))
+    await run(addPlace(SPB))
+
+    const places = await run(listPlaces())
+    expect(places.map((p) => p.name)).toEqual(['Moscow', 'St Petersburg'])
+    expect(await run(selectedId())).toBe(SPB.id)
+    expect((await run(selectedPlace()))?.name).toBe('St Petersburg')
   })
 
-  test('forecast cache roundtrips per key', async () => {
-    expect(
-      await run(readForecast('55.7,37.6|2026-08-19|metric')),
-    ).toBeUndefined()
-    await run(writeForecast('55.7,37.6|2026-08-19|metric', FORECAST))
-    expect(await run(readForecast('55.7,37.6|2026-08-19|metric'))).toEqual(
-      FORECAST,
-    )
+  test('selection can move between Current location and a saved place', async () => {
+    await run(addPlace(MOSCOW))
+    await run(addPlace(SPB))
+
+    await run(selectPlace(MOSCOW.id))
+    expect((await run(selectedPlace()))?.name).toBe('Moscow')
+
+    // null = Current location (geolocation)
+    await run(selectPlace(null))
+    expect(await run(selectedId())).toBeNull()
+    expect(await run(selectedPlace())).toBeUndefined()
+  })
+
+  test('remove deletes a place and its selection', async () => {
+    await run(addPlace(MOSCOW))
+    await run(addPlace(SPB))
+    await run(removePlace(MOSCOW.id))
+    expect((await run(listPlaces())).map((p) => p.name)).toEqual([
+      'St Petersburg',
+    ])
+  })
+})
+
+describe('IndexedDB forecast cache (unchanged)', () => {
+  beforeEach(clearDb)
+
+  test('roundtrips per key', async () => {
+    expect(await run(readForecast('a|b|c'))).toBeUndefined()
+    await run(writeForecast('a|b|c', FORECAST))
+    expect(await run(readForecast('a|b|c'))).toEqual(FORECAST)
     expect(await run(readForecast('other-key'))).toBeUndefined()
   })
 })
