@@ -124,7 +124,7 @@ const specFor = (code: number, isDay: number): WeatherSpec => {
       ...sky,
       cloudCount: 10,
       cloudOpacity: 0.7,
-      particles: 'rain',
+      particles: 'none',
       fog: 0.35,
       stars: false,
     }
@@ -133,7 +133,7 @@ const specFor = (code: number, isDay: number): WeatherSpec => {
       ...sky,
       cloudCount: 9,
       cloudOpacity: 0.6,
-      particles: 'rain',
+      particles: 'none',
       fog: 0.2,
       stars: false,
     }
@@ -142,7 +142,7 @@ const specFor = (code: number, isDay: number): WeatherSpec => {
       ...sky,
       cloudCount: 9,
       cloudOpacity: 0.65,
-      particles: 'rain',
+      particles: 'none',
       fog: 0.28,
       stars: false,
     }
@@ -151,7 +151,7 @@ const specFor = (code: number, isDay: number): WeatherSpec => {
       ...sky,
       cloudCount: 8,
       cloudOpacity: 0.6,
-      particles: 'snow',
+      particles: 'none',
       fog: 0.18,
       stars: false,
     }

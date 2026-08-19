@@ -8,6 +8,8 @@ import {
 } from '../lib/weather/conditions.ts'
 import { placeString } from '../lib/place/store.ts'
 import { APP_VERSION } from '../lib/version.ts'
+import { conditionToAtmos } from '../lib/atmos.ts'
+import { useAtmosphere } from '../lib/use-atmosphere.ts'
 import { HourlyGraph } from '../components/hourly-graph.tsx'
 import { TenDay } from '../components/ten-day.tsx'
 import { RadarMap } from '../components/radar-map.tsx'
@@ -23,7 +25,11 @@ const skyStyle = (f: ForecastT): string => {
 }
 
 const Card = (props: { title: string; children: unknown }): JSX.Element => (
-  <section class="rounded-[26px] border border-white/10 bg-card px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] backdrop-blur-2xl">
+  <section
+    data-atmos-glass
+    data-atmos-collision
+    class="rounded-[26px] border border-white/10 bg-card px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] backdrop-blur-2xl"
+  >
     <h2 class="mb-2 text-[13px] font-normal tracking-[1.1px] text-ink-2 uppercase">
       {props.title}
     </h2>
@@ -60,8 +66,13 @@ const ForecastView = (props: {
       : props.b.kind === 'current'
         ? { lat: props.b.latitude, lon: props.b.longitude }
         : undefined
+  // The forecast root doubles as the atmos-fx DOM-aware precipitation layer.
+  const [rootEl, setRootEl] = createSignal<HTMLElement | undefined>(undefined)
+  useAtmosphere(rootEl, () => conditionToAtmos(cur.code), { density: 0.6 })
   return (
     <div
+      ref={(el) => setRootEl(el)}
+      data-atmos-root
       class="relative mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
       style={{ background: skyStyle(props.f) }}
     >
