@@ -9,27 +9,21 @@ interface AtmosphereController {
   readonly destroy: () => void
 }
 
-interface AtmosphereOptions {
-  readonly density?: number
-  readonly wind?: number
-}
-
 type Loaded = {
   createAtmosphere: (el: HTMLElement, options: object) => AtmosphereController
 }
 
 /**
  * Attach atmos-fx's framework-agnostic `createAtmosphere` to the given root
- * element (the forecast screen). The library is **code-split**: it (and the
- * React peer it bundles) is dynamic-imported only when a forecast with
- * precipitation mounts, keeping it off the critical path. Children tagged
- * `data-atmos-glass` / `data-atmos-collision` become glass/collision surfaces.
- * `preset === 'none'` zeroes density so no particles render.
+ * element. The library is code-split (dynamic import), so its size stays off the
+ * critical path. Children tagged `data-atmos-glass` / `data-atmos-collision`
+ * become glass/collision surfaces. `preset === 'none'` zeroes density.
  */
 export const useAtmosphere = (
   root: Accessor<HTMLElement | undefined>,
-  preset: () => AtmosPreset,
-  opts: AtmosphereOptions = {},
+  preset: Accessor<AtmosPreset>,
+  density: Accessor<number> = () => 0.7,
+  wind: Accessor<number> = () => -0.12,
 ): void => {
   let controller: AtmosphereController | undefined
   let cancelled = false
@@ -38,9 +32,8 @@ export const useAtmosphere = (
     const p = preset()
     return p === 'none' ? 'rain' : p
   }
-  const density = (): number =>
-    preset() === 'none' ? 0 : (opts.density ?? 0.7)
-  const wind = (): number => opts.wind ?? -0.12
+  const effDensity = (): number => (preset() === 'none' ? 0 : density())
+  const effWind = (): number => wind()
 
   createEffect(
     () => root() && !controller,
@@ -53,8 +46,8 @@ export const useAtmosphere = (
             if (cancelled || !el.isConnected) return
             controller = createAtmosphere(el, {
               preset: active(),
-              density: density(),
-              wind: wind(),
+              density: effDensity(),
+              wind: effWind(),
               quality: 'auto',
             })
             controller.start()
@@ -65,12 +58,12 @@ export const useAtmosphere = (
   )
 
   createEffect(
-    () => `${preset()}:${density()}:${wind()}`,
+    () => `${preset()}:${effDensity()}:${effWind()}`,
     () =>
       controller?.update({
         preset: active(),
-        density: density(),
-        wind: wind(),
+        density: effDensity(),
+        wind: effWind(),
       }),
   )
 

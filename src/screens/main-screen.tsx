@@ -68,7 +68,12 @@ const ForecastView = (props: {
         : undefined
   // The forecast root doubles as the atmos-fx DOM-aware precipitation layer.
   const [rootEl, setRootEl] = createSignal<HTMLElement | undefined>(undefined)
-  useAtmosphere(rootEl, () => conditionToAtmos(cur.code), { density: 0.6 })
+  useAtmosphere(
+    rootEl,
+    () => conditionToAtmos(cur.code),
+    () => 0.6,
+    () => -0.12,
+  )
   return (
     <div
       ref={(el) => setRootEl(el)}
