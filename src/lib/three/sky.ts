@@ -29,6 +29,42 @@ const sphereShader = {
   `,
 }
 
+/**
+ * Snowfall vertex shader: each flake falls with repeating wrap, sways on x/z
+ * from a per-flake phase, and its point size fades with perspective depth —
+ * the "randomized motion for natural effect" the reference builds.
+ */
+const snowVert = /* glsl */ `
+  attribute float aSize;
+  attribute float aPhase;
+  attribute float aSpeed;
+  uniform float uTime;
+  uniform float uPixelRatio;
+  varying float vA;
+  void main() {
+    vec3 p = position;
+    float t = uTime * aSpeed + aPhase;
+    p.y = mod(p.y - t * 8.0, 62.0) - 31.0;
+    p.x += sin(aPhase * 3.0 + t * 1.7) * 3.0;
+    p.z += cos(aPhase * 2.0 + t) * 2.0;
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    gl_PointSize = aSize * uPixelRatio * (12.0 / max(0.1, -mv.z));
+    gl_Position = projectionMatrix * mv;
+    vA = 1.0;
+  }
+`
+
+const snowFrag = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uOpacity;
+  varying float vA;
+  void main() {
+    float d = length(gl_PointCoord - 0.5);
+    float a = smoothstep(0.5, 0.12, d) * uOpacity * vA;
+    gl_FragColor = vec4(uColor, a);
+  }
+`
+
 /** A soft radial "puff" texture used for clouds / particles. */
 const puffTexture = (
   radial: string,
@@ -173,18 +209,19 @@ export class Sky {
   }
   private particles: 'none' | 'rain' | 'snow' = 'none'
   private rainMat!: THREE.PointsMaterial
-  private snowMat!: THREE.PointsMaterial
+  private snowMat!: THREE.ShaderMaterial
   private starMat!: THREE.PointsMaterial
   private stormClouds = new THREE.Group()
   private rainVel!: Float32Array
   private raf = 0
-  private clock = new THREE.Clock()
+  private clock!: THREE.Timer
   private targets: { px: number; py: number } = { px: 0, py: 0 }
   private current: { px: number; py: number } = { px: 0, py: 0 }
   private ro: ResizeObserver
   private onPointerMove: (e: PointerEvent) => void
 
   constructor(container: HTMLElement) {
+    this.clock = new THREE.Timer()
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.domElement.style.position = 'absolute'
@@ -244,7 +281,7 @@ export class Sky {
     this.snow = this.makeSnow()
     this.starPoints = this.makeStars()
     this.rainMat = this.rain.material as THREE.PointsMaterial
-    this.snowMat = this.snow.material as THREE.PointsMaterial
+    this.snowMat = this.snow.material as THREE.ShaderMaterial
     this.starMat = this.starPoints.material as THREE.PointsMaterial
     this.scene.add(this.rain, this.snow, this.starPoints)
 
@@ -292,7 +329,9 @@ export class Sky {
     window.addEventListener('pointermove', this.onPointerMove)
 
     const loop = (): void => {
-      const t = this.clock.getElapsedTime()
+      this.clock.update()
+      const t = this.clock.getElapsed()
+      const dt = this.clock.getDelta()
       this.current.px += (this.targets.px - this.current.px) * 0.04
       this.current.py += (this.targets.py - this.current.py) * 0.04
       this.clouds.position.set(this.current.py * 1.5, this.current.px * 1.2, 0)
@@ -311,7 +350,7 @@ export class Sky {
         c.rotation.z -= 0.0003
       })
 
-      this.animateParticles(t)
+      this.animateParticles(t, dt)
       this.renderer.render(this.scene, this.camera)
       this.raf = requestAnimationFrame(loop)
     }
@@ -344,21 +383,34 @@ export class Sky {
   }
 
   private makeSnow = (): THREE.Points => {
-    const tex = puffTexture('rgba(255,255,255,0.35)')
-    const n = 140
+    const n = 900
     const pos = new Float32Array(n * 3)
+    const size = new Float32Array(n)
+    const phase = new Float32Array(n)
+    const speed = new Float32Array(n)
     for (let i = 0; i < n; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 70
-      pos[i * 3 + 1] = Math.random() * 50 - 5
-      pos[i * 3 + 2] = -8 - Math.random() * 26
+      pos[i * 3] = (Math.random() - 0.5) * 90
+      pos[i * 3 + 1] = Math.random() * 60 - 30
+      pos[i * 3 + 2] = -12 - Math.random() * 50
+      size[i] = 0.8 + Math.random() * 1.4
+      phase[i] = Math.random() * Math.PI * 2
+      speed[i] = 0.4 + Math.random() * 0.5
     }
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-    const m = new THREE.PointsMaterial({
-      size: 0.8,
-      map: tex,
+    g.setAttribute('aSize', new THREE.BufferAttribute(size, 1))
+    g.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1))
+    g.setAttribute('aSpeed', new THREE.BufferAttribute(speed, 1))
+    const m = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uOpacity: { value: 0 },
+        uColor: { value: new THREE.Color(0xffffff) },
+        uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
+      },
+      vertexShader: snowVert,
+      fragmentShader: snowFrag,
       transparent: true,
-      opacity: 0,
       depthWrite: false,
     })
     return new THREE.Points(g, m)
@@ -387,8 +439,7 @@ export class Sky {
   }
 
   /** Interpolate particle Y so rain falls and snow drifts, resetting to top. */
-  private animateParticles(t: number): void {
-    const dt = this.clock.getDelta()
+  private animateParticles(t: number, dt: number): void {
     if (this.particles === 'rain' && this.rain) {
       const attr = this.rain.geometry.getAttribute(
         'position',
@@ -407,16 +458,8 @@ export class Sky {
       }
       attr.needsUpdate = true
     } else if (this.particles === 'snow' && this.snow) {
-      const attr = this.snow.geometry.getAttribute(
-        'position',
-      ) as THREE.BufferAttribute
-      const a = attr.array as Float32Array
-      for (let i = 0; i < a.length; i += 3) {
-        a[i + 1] -= dt * 4
-        a[i] += Math.sin(t * 1.5 + i) * dt * 0.6
-        if (a[i + 1] < -22) a[i + 1] = 24
-      }
-      attr.needsUpdate = true
+      // Shader-driven: motion lives in the vertex shader off this clock.
+      ;(this.snowMat.uniforms.uTime.value as number) = t
     }
   }
 
@@ -437,7 +480,8 @@ export class Sky {
     })
 
     this.rainMat.opacity = spec.particles === 'rain' ? 0.5 : 0
-    this.snowMat.opacity = spec.particles === 'snow' ? 0.7 : 0
+    ;(this.snowMat.uniforms.uOpacity.value as number) =
+      spec.particles === 'snow' ? 0.85 : 0
     this.starMat.opacity = spec.stars ? 0.5 : 0
 
     // Fog density by condition: none for clear, thick for fog/rain.
