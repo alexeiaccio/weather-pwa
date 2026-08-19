@@ -19,6 +19,7 @@
     "wrangler.toml",
     "package-lock.json",
     "CONTEXT.md",
-    "README.md"
+    "README.md",
+    "AGENTS.md"
   ]
 }

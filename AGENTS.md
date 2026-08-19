@@ -12,7 +12,7 @@
 
 ## Wayfinder ops
 
-Tracker conventions: `.wayfinder/README.md`. Claim a ticket by setting its `assigned` frontmatter before working it; resolve by appending `## Resolution`, setting `status: closed`, and adding a one-line decision to the map's _Decisions so far_.
+Tracker conventions: `.wayfinder/README.md`. Claim a ticket by setting its `assigned` frontmatter before working it; resolve by appending `## Resolution`, setting `status: closed`, and adding a one-line decision to the map's *Decisions so far*.
 
 ## Rules
 
