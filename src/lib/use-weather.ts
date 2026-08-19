@@ -1,14 +1,12 @@
 import { createEffect, createMemo, createSignal, type Accessor } from 'solid-js'
-import { Schema } from 'effect'
 import { fetchForecast } from './weather/api.ts'
-import { Forecast, type Forecast as ForecastT } from './weather/schema.ts'
+import type { Forecast as ForecastT } from './weather/schema.ts'
 import { cacheKey, dayKey } from './weather/cache.ts'
+import { readForecast, readPin, writeForecast, writePin } from './store/db.ts'
 import { run } from './runtime.ts'
 import { getPosition } from './geolocation.ts'
 import {
-  loadPin,
   resolveBootstrap,
-  savePin,
   type Bootstrap,
   type GeoPosition,
 } from '../lib/place/store.ts'
@@ -19,31 +17,6 @@ type ForecastSignal =
   | { kind: 'ok'; forecast: ForecastT }
   | { kind: 'stale'; forecast: ForecastT; offline: boolean }
   | { kind: 'error'; message: string }
-
-const CACHE_KEYS = 'weather:forecast'
-
-const readCache = (key: string): ForecastT | null => {
-  try {
-    const raw = globalThis.localStorage?.getItem(CACHE_KEYS)
-    if (!raw) return null
-    const map: Record<string, unknown> = JSON.parse(raw)
-    if (!(key in map)) return null
-    return Schema.decodeUnknownSync(Forecast)(map[key])
-  } catch {
-    return null
-  }
-}
-
-const writeCache = (key: string, forecast: ForecastT): void => {
-  try {
-    const raw = globalThis.localStorage?.getItem(CACHE_KEYS)
-    const map: Record<string, unknown> = raw ? JSON.parse(raw) : {}
-    map[key] = forecast
-    globalThis.localStorage?.setItem(CACHE_KEYS, JSON.stringify(map))
-  } catch {
-    /* cache is best-effort */
-  }
-}
 
 const coordsOf = (b: Bootstrap): { lat: number; lon: number } | undefined => {
   if (b.kind === 'current') return { lat: b.latitude, lon: b.longitude }
@@ -60,15 +33,15 @@ export interface WeatherApi {
   readonly pin: (place: Place) => void
 }
 
-/** Wire place bootstrap (W3) + forecast SWR (W6) for the app. */
+/** Wire place bootstrap (W3) + forecast SWR (W6) against IndexedDB (W7). */
 export const useWeather = (): WeatherApi => {
   const [geo, setGeo] = createSignal<GeoPosition>({
     ok: false,
     latitude: 0,
     longitude: 0,
   })
-  const initialPin = loadPin()
-  const [pin, setPin] = createSignal<Place | null>(initialPin)
+  const [pin, setPin] = createSignal<Place | null>(null)
+  const [pinLoaded, setPinLoaded] = createSignal(false)
   const [forecast, setForecast] = createSignal<ForecastSignal>({
     kind: 'loading',
   })
@@ -86,12 +59,26 @@ export const useWeather = (): WeatherApi => {
     return s.kind === 'stale' ? s.offline : false
   })
 
-  // On mount: resolve geolocation once (denied/unavailable → search state).
+  // Load the pinned place from IndexedDB once on mount.
   createEffect(
-    () => (pin() ? 'pinned' : 'no-pin'),
+    () => undefined,
     () => {
-      if (pin()) return
-      void getPosition().then(setGeo)
+      void run(readPin)
+        .then((place) => {
+          setPin(place)
+          setPinLoaded(true)
+        })
+        .catch(() => setPinLoaded(true))
+    },
+  )
+
+  // Geolocate only once the pin is loaded and there is none (W3 rule).
+  createEffect(
+    () => `${pinLoaded()}:${pin() ? 'p' : 'n'}`,
+    () => {
+      if (pinLoaded() && !pin()) {
+        void getPosition().then(setGeo)
+      }
     },
   )
 
@@ -107,17 +94,22 @@ export const useWeather = (): WeatherApi => {
       return
     }
     const [lat, lon] = key.split(',').map((n) => Number(n))
-    const cacheKeyStr = cacheKey(key, dayKey(Date.now()))
-    const cached = readCache(cacheKeyStr)
-    if (cached) {
-      setForecast({ kind: 'stale', forecast: cached, offline: false })
-    }
-    void run(fetchForecast(lat, lon))
-      .then((f) => {
-        writeCache(cacheKeyStr, f)
+    const storeKey = cacheKey(key, dayKey(Date.now()))
+    void (async () => {
+      let cached: ForecastT | undefined
+      try {
+        cached = await run(readForecast(storeKey)).catch(() => undefined)
+      } catch {
+        cached = undefined
+      }
+      if (cached) {
+        setForecast({ kind: 'stale', forecast: cached, offline: false })
+      }
+      try {
+        const f = await run(fetchForecast(lat, lon))
+        await run(writeForecast(storeKey, f)).catch(() => undefined)
         setForecast({ kind: 'ok', forecast: f })
-      })
-      .catch((err: unknown) => {
+      } catch (err) {
         if (cached) {
           setForecast({ kind: 'stale', forecast: cached, offline: true })
         } else {
@@ -126,12 +118,14 @@ export const useWeather = (): WeatherApi => {
             message: err instanceof Error ? err.message : String(err),
           })
         }
-      })
+      }
+    })()
   })
 
   const pinPlace = (place: Place): void => {
-    savePin(place)
-    setPin(place)
+    void run(writePin(place))
+      .then(() => setPin(place))
+      .catch(() => setPin(place))
   }
 
   return { forecast, bootstrap, data, stale, offline, pin: pinPlace }

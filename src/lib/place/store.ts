@@ -40,38 +40,3 @@ export const resolveBootstrap = (
 /** Display name for a pin (falls back to raw coords). */
 export const placeString = (place: Place): string =>
   place.name + (place.country ? `, ${place.country}` : '')
-
-// --- single-pin persistence (v1 backing). Swaps to IndexedDB per W7. ---
-
-const PIN_KEY = 'weather:pin'
-
-const memory = (): Storage | undefined => {
-  try {
-    return globalThis.localStorage
-  } catch {
-    return undefined
-  }
-}
-
-export const loadPin = (): Place | null => {
-  const raw = memory()?.getItem(PIN_KEY)
-  if (!raw) return null
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      typeof (parsed as Place).id === 'number' &&
-      typeof (parsed as Place).name === 'string'
-    ) {
-      return parsed as Place
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
-export const savePin = (place: Place): void => {
-  memory()?.setItem(PIN_KEY, JSON.stringify(place))
-}

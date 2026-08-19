@@ -47,7 +47,7 @@ export const HOURLY_HOURS = 24 as const
 
 export const Forecast = Schema.Struct({
   placeKey: Schema.String,
-  fetchedAt: Schema.NumberFromString,
+  fetchedAt: Schema.Number,
   current: Schema.Struct({
     temp: Schema.Number,
     feels: Schema.Number,
