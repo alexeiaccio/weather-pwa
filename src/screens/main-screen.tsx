@@ -11,6 +11,7 @@ import { APP_VERSION } from '../lib/version.ts'
 import { HourlyGraph } from '../components/hourly-graph.tsx'
 import { TenDay } from '../components/ten-day.tsx'
 import { RadarMap } from '../components/radar-map.tsx'
+import { Sky3D } from '../components/sky-3d.tsx'
 import { PlaceSearch } from '../components/place-search.tsx'
 import { PlacesPanel } from '../components/places-panel.tsx'
 import type { Bootstrap } from '../lib/place/store.ts'
@@ -61,79 +62,83 @@ const ForecastView = (props: {
         : undefined
   return (
     <div
-      class="mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
+      class="relative mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
       style={{ background: skyStyle(props.f) }}
     >
-      <button
-        type="button"
-        aria-label="Saved places"
-        onClick={props.onOpenList}
-        class="fixed top-4 left-4 tap rounded-full bg-white/15 px-3 py-2 text-white backdrop-blur-md hover:bg-white/25"
-      >
-        ☰
-      </button>
-      <div class="text-center">
+      {/* Animated Three.js sky; the CSS gradient above is its fallback. */}
+      <Sky3D code={cur.code} isDay={cur.isDay} />
+      <div class="relative z-10">
         <button
           type="button"
-          onClick={props.onEdit}
-          class="group inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-sm font-medium backdrop-blur-md"
+          aria-label="Saved places"
+          onClick={props.onOpenList}
+          class="fixed top-4 left-4 tap rounded-full bg-white/15 px-3 py-2 text-white backdrop-blur-md hover:bg-white/25"
         >
-          <span>{title}</span>
-          <span class="text-ink-3 group-hover:text-white">✎</span>
+          ☰
         </button>
-        <div class="mt-1 text-[clamp(96px,28vw,220px)] leading-none font-extralight tracking-[-0.02em]">
-          {Math.round(cur.temp)}°
-        </div>
-        <div class="text-[30px] font-light">
-          {conditionGlyph(cur.code)} {conditionLabel(cur.code)}
-          <span class="ml-3 text-[19px] font-normal text-ink-2">
-            H:
-            {Math.round(Math.max(...props.f.daily.map((d) => d.max)))}° L:
-            {Math.round(Math.min(...props.f.daily.map((d) => d.min)))}°
-          </span>
-        </div>
-      </div>
-
-      <div class="mt-4 grid grid-cols-2 gap-3.5">
-        <MetricCard title="Feels Like" value={`${Math.round(cur.feels)}°`} />
-        <MetricCard title="Wind" value={`${Math.round(cur.windKmh)} km/h`} />
-        <MetricCard title="Humidity" value={`${Math.round(cur.humidity)}%`} />
-        <MetricCard
-          title="Pressure"
-          value={`${Math.round(cur.pressureHpa)} hPa`}
-        />
-      </div>
-
-      <div class="mt-3.5">
-        <Card title="Hourly Forecast">
-          <HourlyGraph forecast={props.f} />
-        </Card>
-      </div>
-
-      <div class="mt-3.5">
-        <Card title="10-Day Forecast">
-          <TenDay days={props.f.daily} currentTemp={cur.temp} />
-        </Card>
-      </div>
-
-      <Show when={center} fallback={null}>
-        {(c) => (
-          <div class="mt-3.5">
-            <Card title="Precipitation">
-              <RadarMap lat={c().lat} lon={c().lon} />
-            </Card>
+        <div class="text-center">
+          <button
+            type="button"
+            onClick={props.onEdit}
+            class="group inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-sm font-medium backdrop-blur-md"
+          >
+            <span>{title}</span>
+            <span class="text-ink-3 group-hover:text-white">✎</span>
+          </button>
+          <div class="mt-1 text-[clamp(96px,28vw,220px)] leading-none font-extralight tracking-[-0.02em]">
+            {Math.round(cur.temp)}°
           </div>
-        )}
-      </Show>
+          <div class="text-[30px] font-light">
+            {conditionGlyph(cur.code)} {conditionLabel(cur.code)}
+            <span class="ml-3 text-[19px] font-normal text-ink-2">
+              H:
+              {Math.round(Math.max(...props.f.daily.map((d) => d.max)))}° L:
+              {Math.round(Math.min(...props.f.daily.map((d) => d.min)))}°
+            </span>
+          </div>
+        </div>
 
-      <p class="mt-4 text-center text-xs text-ink-3">
-        <Show when={props.offline}>
-          <span class="font-semibold text-alert-red">Offline · </span>
+        <div class="mt-4 grid grid-cols-2 gap-3.5">
+          <MetricCard title="Feels Like" value={`${Math.round(cur.feels)}°`} />
+          <MetricCard title="Wind" value={`${Math.round(cur.windKmh)} km/h`} />
+          <MetricCard title="Humidity" value={`${Math.round(cur.humidity)}%`} />
+          <MetricCard
+            title="Pressure"
+            value={`${Math.round(cur.pressureHpa)} hPa`}
+          />
+        </div>
+
+        <div class="mt-3.5">
+          <Card title="Hourly Forecast">
+            <HourlyGraph forecast={props.f} />
+          </Card>
+        </div>
+
+        <div class="mt-3.5">
+          <Card title="10-Day Forecast">
+            <TenDay days={props.f.daily} currentTemp={cur.temp} />
+          </Card>
+        </div>
+
+        <Show when={center} fallback={null}>
+          {(c) => (
+            <div class="mt-3.5">
+              <Card title="Precipitation">
+                <RadarMap lat={c().lat} lon={c().lon} />
+              </Card>
+            </div>
+          )}
         </Show>
-        Updated {timeAgo(props.f.fetchedAt)}
-        {props.stale && !props.offline ? ' · refreshing…' : ''}
-        {' · '}Weather data by Open-Meteo.com · {APP_VERSION}
-      </p>
+
+        <p class="mt-4 text-center text-xs text-ink-3">
+          <Show when={props.offline}>
+            <span class="font-semibold text-alert-red">Offline · </span>
+          </Show>
+          Updated {timeAgo(props.f.fetchedAt)}
+          {props.stale && !props.offline ? ' · refreshing…' : ''}
+          {' · '}Weather data by Open-Meteo.com · {APP_VERSION}
+        </p>
+      </div>
     </div>
   )
 }
