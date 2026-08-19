@@ -4,7 +4,7 @@ title: Location source and place strategy
 type: grilling
 status: open
 blocked_by: []
-assigned: Aleksey Tukachev
+assigned: Alexei Accio
 status: closed
 ---
 

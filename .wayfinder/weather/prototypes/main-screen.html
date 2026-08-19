@@ -1,0 +1,566 @@
+<!doctype html>
+<!--
+  W5 · MAIN-SCREEN VISUAL PROTOTYPE — THROWAWAY SPIKE
+  Question: does the researched iOS 27/26 visual language (W2 research) applied to
+  realistic weather data read as "the iOS 27 Weather app" on the Mind One (1080×1240,
+  density 400) and in a macOS browser?
+
+  Three structurally different variants, switchable with `?variant=A|B|C` or the
+  floating bottom pill (← / → keys work, not while typing).
+
+    A · Glass faithful — hero-first vertical stack (W2 tokens as researched)
+    B · Split desktop   — header spans wide; hourly graph + 10-day sit side by side on ≥768px
+    C · Graph-first     — hourly curve is the hero; the big temperature lives inside the graph card
+
+  Run:  python3 -m http.server 8137  from this directory
+  Open: http://localhost:8137/main-screen.html  (macOS) and on the Mind One via adb.
+
+  Data: live Open-Meteo fetch (Moscow point, keyless per W1) with an embedded
+  fixture fallback — see the "data source" hint under the switcher.
+  This file is a prototype: no tests, no persistence, minimal error handling.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Weather PWA · W5 main-screen prototype</title>
+<style>
+  :root{
+    --ink:#fff;
+    --ink2:rgba(255,255,255,.78);
+    --ink3:rgba(255,255,255,.55);
+    --accent-blue:#59a9ff;
+    --accent-amber:#ffb340;
+    --alert-red:#ff3b30;
+    --card:rgba(255,255,255,.12);
+    --card-strong:rgba(255,255,255,.20);
+    --track:rgba(255,255,255,.16);
+    --radius:26px;
+    --gap:14px;
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; height:100%;}
+  body{
+    font-family:var(--font);
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    background:#10202f;
+    overflow-x:hidden;
+  }
+  /* full-screen fixed sky backdrop */
+  .sky{
+    position:fixed; inset:0; z-index:0;
+    background:linear-gradient(180deg,#5b8fc0 0%, #4a7ba8 55%, #3c658f 100%);
+    transition:background 1.2s ease;
+  }
+  main{
+    position:relative; z-index:1;
+    max-width:472px; margin:0 auto;
+    padding:calc(env(safe-area-inset-top,0px) + 34px) 18px 96px;
+    display:flex; flex-direction:column; gap:var(--gap);
+  }
+  /* ---- header ---- */
+  .place-chip{
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:14px; font-weight:500; letter-spacing:.2px;
+    padding:5px 12px; border-radius:999px;
+    background:rgba(255,255,255,.14);
+    backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  }
+  .hero-top{ text-align:center; }
+  .hero-temp{
+    display:block;
+    font-size:clamp(96px, 28vw, 220px);
+    font-weight:200; line-height:1; letter-spacing:-0.02em;
+    margin:6px 0 2px;
+  }
+  .cond-line{
+    font-size:30px; font-weight:300; letter-spacing:.1px;
+  }
+  .hi-lo{
+    display:inline-block; margin-left:12px;
+    font-size:19px; font-weight:400; color:var(--ink2);
+  }
+  /* ---- cards (Liquid Glass) ---- */
+  .card{
+    background:var(--card);
+    -webkit-backdrop-filter:blur(22px) saturate(150%);
+    backdrop-filter:blur(22px) saturate(150%);
+    border-radius:var(--radius);
+    padding:18px 18px 12px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.10), 0 6px 24px rgba(0,0,0,.12);
+  }
+  .card-title{
+    margin:0 0 6px;
+    font-size:15px; font-weight:400; letter-spacing:1.1px; text-transform:uppercase;
+    color:var(--ink2);
+  }
+  .graph-wrap{ position:relative; margin-top:4px; }
+  .graph-wrap svg{ display:block; width:100%; height:auto; }
+  .scrub-chip{
+    position:absolute; pointer-events:none; white-space:nowrap;
+    font-size:13px; font-weight:600; color:#fff;
+    background:rgba(15,20,28,.78);
+    padding:3px 9px; border-radius:8px; transform:translate(-50%, calc(-100% - 6px));
+    display:none;
+  }
+  /* ---- 10-day rows ---- */
+  .day-row{
+    display:grid;
+    grid-template-columns:58px 64px 26px 1fr 26px;
+    align-items:center; gap:8px;
+    padding:11px 0; font-size:17px;
+    border-top:1px solid rgba(255,255,255,.08);
+  }
+  .day-row:first-of-type{ border-top:none; }
+  .day-row .day{ font-weight:500; }
+  .day-row .icon{ text-align:left; font-size:19px; }
+  .day-row .precip{ font-size:12px; font-weight:600; color:var(--accent-blue); margin-left:4px; }
+  .day-row .low{ text-align:right; color:var(--ink2); font-weight:400; }
+  .day-row .high{ text-align:right; font-weight:500; }
+  .temp-track{
+    position:relative; height:6px; border-radius:3px; background:var(--track);
+  }
+  .temp-seg{
+    position:absolute; top:0; height:100%; border-radius:3px;
+  }
+  .temp-dot{
+    position:absolute; top:50%; left:50%; width:12px; height:12px;
+    transform:translate(-50%,-50%); border-radius:50%;
+    background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.35);
+  }
+  .foot-note{
+    text-align:center; font-size:12px; color:var(--ink3); margin-top:2px;
+  }
+  /* ---- variants ---- */
+  /* B: split on wide windows */
+  @media (min-width:768px){
+    body[data-variant="B"] .grid-two{
+      display:grid; grid-template-columns:1fr 1fr; gap:var(--gap); align-items:start;
+    }
+  }
+  /* C: graph-first — header compacts, curve gets taller, temp lives in the graph card */
+  body[data-variant="C"] .hero-temp{ font-size:clamp(72px,20vw,140px); }
+  body[data-variant="C"] .cond-line{ font-size:24px; }
+  body[data-variant="C"] .cond-line .hi-lo{ font-size:17px; margin-left:8px; }
+  body[data-variant="C"] .graph-card{ order:0; }
+  body[data-variant="C"] .gcard-temp{
+    font-size:56px; font-weight:200; line-height:1; letter-spacing:-0.02em;
+    display:inline-block; margin-right:12px; vertical-align:middle;
+  }
+  body[data-variant="C"] .gcard-cond{ font-size:17px; font-weight:300; vertical-align:middle; }
+  /* ---- prototype switcher (NOT part of the design) ---- */
+  .switcher{
+    position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    z-index:60; display:flex; align-items:center; gap:8px;
+    background:rgba(18,22,30,.78);
+    -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px);
+    border:1px solid rgba(255,255,255,.14);
+    border-radius:999px; padding:7px 12px;
+    box-shadow:0 6px 24px rgba(0,0,0,.4);
+    color:#fff;
+  }
+  .switcher button{
+    font-family:inherit; font-size:16px; font-weight:600; color:#fff;
+    background:rgba(255,255,255,.14); border:none; border-radius:50%;
+    width:30px; height:30px; cursor:pointer;
+  }
+  .switcher .label{ font-size:13px; font-weight:600; min-width:150px; text-align:center; }
+  .switcher .sub{ font-size:10px; font-weight:400; color:rgba(255,255,255,.6); text-align:center; }
+</style>
+</head>
+<body data-variant="A">
+  <div class="sky" id="sky"></div>
+  <main id="app"></main>
+
+  <div class="switcher" role="group" aria-label="Prototype variant">
+    <button id="prev" aria-label="Previous variant">←</button>
+    <div>
+      <div class="label" id="swLabel">A · Glass faithful</div>
+      <div class="sub" id="swSub">data: loading…</div>
+    </div>
+    <button id="next" aria-label="Next variant">→</button>
+  </div>
+
+<script>
+/* ============ data ============ */
+/* Embedded fixture, shaped like W1's Open-Meteo contract (Moscow-ish, partly cloudy). */
+const FIXTURE = {
+  place: { name: "Current location" },
+  current: { temp: 16.4, feels: 15.2, code: 2, isDay: 1, humidity: 58, windKmh: 12 },
+  hourly: (() => {
+    const h = [];
+    for (let i = 0; i < 24; i++) {
+      // temps: cool night, warm peak ~15:00; precip chance: shower window 13:00–19:00
+      const temp = 8.5 + 8.2 * Math.sin(((i - 3) / 24) * 2 * Math.PI);
+      let pp = 0;
+      if (i >= 11 && i <= 19) pp = Math.round(90 * Math.sin(((i - 11) / 8) * Math.PI));
+      h.push({ t: `${String(i).padStart(2,"0")}:00`, temp: +temp.toFixed(1), pp });
+    }
+    return h;
+  })(),
+  daily: [
+    { day: "Today", code: 2, max: 24, min: 8,  pp: 40, cur: 16.4 },
+    { day: "Mon",   code: 61, max: 21, min: 9,  pp: 70 },
+    { day: "Tue",   code: 2,  max: 23, min: 10, pp: 20 },
+    { day: "Wed",   code: 80, max: 19, min: 9,  pp: 85 },
+    { day: "Thu",   code: 3,  max: 17, min: 8,  pp: 35 },
+    { day: "Fri",   code: 0,  max: 22, min: 8,  pp: 0 },
+    { day: "Sat",   code: 1,  max: 24, min: 11, pp: 0 },
+    { day: "Sun",   code: 95, max: 20, min: 10, pp: 75 },
+    { day: "Mon",   code: 63, max: 16, min: 8,  pp: 90 },
+    { day: "Tue",   code: 2,  max: 18, min: 7,  pp: 15 },
+  ],
+};
+
+const WMO = {
+  0: "Clear", 1: "Partly Cloudy", 2: "Partly Cloudy", 3: "Mostly Cloudy",
+  45: "Fog", 48: "Fog",
+  51: "Drizzle", 53: "Drizzle", 55: "Drizzle",
+  61: "Rain", 63: "Moderate Rain", 65: "Heavy Rain",
+  71: "Snow", 73: "Snow", 75: "Heavy Snow",
+  80: "Showers", 81: "Heavy Showers", 82: "Heavy Showers",
+  95: "Thunderstorm", 96: "Thunderstorm", 99: "Severe Thunderstorm",
+};
+const ICON = {
+  0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️", 45: "🌫️", 51: "🌦️", 61: "🌧️",
+  63: "🌧️", 65: "🌧️", 71: "🌨️", 80: "🌦️", 95: "⛈️",
+};
+
+/* Live refresh from Open-Meteo (keyless per W1). Falls back to FIXTURE. */
+let STATE = { ...FIXTURE, src: "fixture" };
+
+function skyFor(code, isDay) {
+  const c = WMO[code] ?? "Partly Cloudy";
+  if (code >= 95) return ["#2b3b52", "#1c2740"];              // thunderstorm: flat dark
+  if (code >= 61 && code <= 82) return ["#52677c", "#3c4d5f"]; // rain/shower: gray-blue
+  if (code >= 71 && code <= 77) return ["#8299ad", "#5c7185"]; // snow: pale slate
+  if (code === 45 || code === 48) return ["#6f7d8c", "#55626f"]; // fog: muted
+  if (isDay) return ["#5b8fc0", "#3c658f"];                   // day: steel blue
+  return ["#1a2b3d", "#0d1520"];                              // night: near-black navy
+}
+function fmtHour(t) { const h = +t.slice(0, 2); const s = h % 12 || 12; return h < 12 ? s + "a" : s + "p"; }
+function tempColor(t) {
+  // piecewise lerp: cold blue → green → amber → red
+  const stops = [
+    [-10, [74, 153, 255]], [5, [111, 215, 168]], [18, [255, 210, 107]], [28, [255, 157, 92]], [40, [255, 99, 97]],
+  ];
+  let a = stops[0], b = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (t >= stops[i][0] && t <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break; }
+  }
+  const span = b[0] - a[0] || 1, k = Math.max(0, Math.min(1, (t - a[0]) / span));
+  const ch = a[1].map((v, i) => Math.round(v + (b[1][i] - v) * k));
+  return `rgb(${ch.join(",")})`;
+}
+
+/* ============ SVG hourly graph (hand-rolled, per W2 recipe) ============ */
+function catmull(pts) {
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+
+function renderGraph(host, hourly, { curveH = 150, bandH = 56, labelEvery = 3 } = {}) {
+  host.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "graph-wrap";
+  const w = host.clientWidth || 400;
+  const gap = 10, pt = 12, pb = 6;
+  const n = hourly.length;
+  const slot = w / n;
+  const temps = hourly.map(h => h.temp);
+  const tMin = Math.min(...temps), tMax = Math.max(...temps);
+  const pad = Math.max(2, (tMax - tMin) * 0.12);
+  const yOf = t => gap + pt + (1 - (t - (tMin - pad)) / (tMax - tMin + 2 * pad)) * (curveH - pt - pb - gap);
+  const bandTop = gap + pt + curveH + 10;
+  const bandBase = bandTop + bandH;
+  const H = bandBase + 16;
+  const x = i => i * slot + slot / 2;
+
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.style.height = H + "px";
+  svg.style.width = w + "px";
+
+  // gradient fill under the curve
+  const lg = document.createElementNS(ns, "linearGradient");
+  lg.id = "fill" + Math.random().toString(36).slice(2, 7);
+  lg.setAttribute("x1", "0"); lg.setAttribute("y1", "0");
+  lg.setAttribute("x2", "0"); lg.setAttribute("y2", "1");
+  const s1 = document.createElementNS(ns, "stop"); s1.setAttribute("offset", "0"); s1.setAttribute("stop-color", "#fff"); s1.setAttribute("stop-opacity", "0.55");
+  const s2 = document.createElementNS(ns, "stop"); s2.setAttribute("offset", "1"); s2.setAttribute("stop-color", "#fff"); s2.setAttribute("stop-opacity", "0");
+  lg.append(s1, s2);
+  svg.appendChild(lg);
+
+  const pts = hourly.map((h, i) => ({ x: x(i), y: yOf(h.temp) }));
+  const dLine = catmull(pts);
+  const dFill = dLine + ` L ${pts[n-1].x.toFixed(1)},${bandTop} L ${pts[0].x.toFixed(1)},${bandTop} Z`;
+
+  const fillPath = document.createElementNS(ns, "path");
+  fillPath.setAttribute("d", dFill); fillPath.setAttribute("fill", `url(#${lg.id})`);
+  svg.appendChild(fillPath);
+
+  // precipitation band: one per-hour block, top edge tapers between hours (W2 recipe)
+  hourly.forEach((h, i) => {
+    const p = Math.max(0, Math.min(100, h.pp)) / 100;
+    const y = bandTop + (1 - p) * bandH;
+    const yN = i < n - 1 ? Math.min(y, bandTop + (1 - Math.max(0, Math.min(100, hourly[i+1].pp)) / 100) * bandH) : y;
+    const blk = document.createElementNS(ns, "path");
+    blk.setAttribute("d", `M ${x(i)},${bandTop} L ${x(i)},${y.toFixed(1)} L ${x(i+1)},${yN.toFixed(1)} L ${x(i+1)},${bandTop} Z`);
+    blk.setAttribute("fill", "var(--accent-blue)");
+    blk.setAttribute("fill-opacity", "0.30");
+    svg.appendChild(blk);
+  });
+
+  const line = document.createElementNS(ns, "path");
+  line.setAttribute("d", dLine);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "#fff");
+  line.setAttribute("stroke-width", "2.5");
+  line.setAttribute("stroke-linecap", "round");
+  line.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(line);
+
+  // baseline rules + hour labels
+  const base = document.createElementNS(ns, "line");
+  base.setAttribute("x1", "0"); base.setAttribute("y1", bandTop); base.setAttribute("x2", w); base.setAttribute("y2", bandTop);
+  base.setAttribute("stroke", "rgba(255,255,255,0.18)");
+  svg.appendChild(base);
+
+  for (let i = 0; i < n; i += labelEvery) {
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("x", x(i)); t.setAttribute("y", bandTop + 8);
+    t.setAttribute("text-anchor", i === 0 ? "start" : i === n - 1 ? "end" : "middle");
+    t.setAttribute("font-size", "10"); t.setAttribute("fill", "rgba(255,255,255,0.6)");
+    t.textContent = i === 0 ? "Now" : fmtHour(hourly[i].t);
+    svg.appendChild(t);
+  }
+
+  // scrub overlay
+  const chip = document.createElement("div");
+  chip.className = "scrub-chip";
+  const sel = document.createElementNS(ns, "line");
+  sel.setAttribute("y1", "0"); sel.setAttribute("y2", H);
+  sel.setAttribute("stroke", "rgba(255,255,255,0.75)");
+  sel.setAttribute("stroke-width", "1"); sel.setAttribute("vector-effect", "non-scaling-stroke");
+  const dot = document.createElementNS(ns, "circle");
+  dot.setAttribute("r", "4.5"); dot.setAttribute("fill", "#fff");
+  dot.setAttribute("stroke", "rgba(0,0,0,0.25)"); dot.setAttribute("stroke-width", "1");
+  function place(i, ev) {
+    const hp = pts[i];
+    sel.setAttribute("x1", hp.x); sel.setAttribute("x2", hp.x);
+    dot.setAttribute("cx", hp.x); dot.setAttribute("cy", hp.y);
+    const h = hourly[i];
+    chip.style.display = "block";
+    chip.style.left = hp.x + "px";
+    chip.style.top = Math.max(0, hp.y - 40) + "px";
+    chip.textContent = `${h.t}  ${Math.round(h.temp)}°  ${h.pp}% ${h.pp > 0 ? "🌧" : ""}`;
+  }
+  svg.appendChild(sel); svg.appendChild(dot); wrap.appendChild(chip);
+
+  let active = -1;
+  function move(ev) {
+    const r = svg.getBoundingClientRect();
+    const idx = Math.max(0, Math.min(n - 1, Math.round((ev.clientX - r.left) / (r.width / n) - 0.5)));
+    if (idx !== active) { active = idx; place(idx, ev); }
+  }
+  svg.style.cursor = "crosshair";
+  svg.addEventListener("pointerdown", e => { svg.setPointerCapture(e.pointerId); move(e); });
+  svg.addEventListener("pointermove", e => { if (e.buttons || e.pointerType !== "mouse") move(e); });
+  svg.addEventListener("pointerup", () => { if (active >= 0) { chip.style.display = "none"; sel.setAttribute("x1", -10); dot.setAttribute("cx", -10); active = -1; } });
+
+  wrap.appendChild(svg);
+  host.appendChild(wrap);
+}
+
+/* ============ screen render ============ */
+const app = document.getElementById("app");
+const sky = document.getElementById("sky");
+const VARIANTS = [
+  { key: "A", name: "Glass faithful" },
+  { key: "B", name: "Split desktop" },
+  { key: "C", name: "Graph-first" },
+];
+
+function render() {
+  const s = STATE;
+  const v = document.body.dataset.variant;
+  meteor();
+  app.innerHTML = "";
+  const cond = WMO[s.current.code] ?? "Partly Cloudy";
+  const icon = ICON[s.current.code] ?? "⛅";
+
+  if (v === "C") {
+    /* --- C · graph-first --- */
+    const d = document.createElement("div");
+    d.style.display = "grid"; d.style.gridTemplateColumns = "1fr"; d.style.gap = "var(--gap)";
+    d.innerHTML = `
+      <header class="hero-top" style="margin-bottom:2px">
+        <div class="place-chip">📍 ${s.place.name}</div>
+        <div class="cond-line" style="margin-top:12px">${icon} ${cond}<span class="hi-lo">H:${Math.max(...s.hourly.map(h=>h.temp))|0}° L:${Math.min(...s.hourly.map(h=>h.temp))|0}°</span></div>
+      </header>
+      <section class="card graph-card">
+        <h2 class="card-title">Hourly forecast</h2>
+        <div style="margin:2px 0 10px"><span class="gcard-temp">${Math.round(s.current.temp)}°</span><span class="gcard-cond">${cond} · Feels like ${Math.round(s.current.feels)}°</span></div>
+        <div class="gr" data-graph></div>
+      </section>
+      <section class="card">
+        <h2 class="card-title">10-Day Forecast</h2>
+        <div data-daily></div>
+      </section>`;
+    d.appendChild(dailyEl()); // ensure daily data hook
+    app.appendChild(d);
+  } else {
+    /* --- A / B --- */
+    const header = document.createElement("header");
+    header.className = "hero-top";
+    header.style.display = "flex"; header.style.flexDirection = "column"; header.style.alignItems = "center";
+    header.innerHTML = `
+      <div class="place-chip">📍 ${s.place.name}</div>
+      <span class="hero-temp">${Math.round(s.current.temp)}°</span>
+      <div class="cond-line">${cond}<span class="hi-lo">H:${s.daily[0].max}° L:${s.daily[0].min}°</span></div>`;
+    app.appendChild(header);
+
+    const grid = document.createElement("div");
+    if (v === "B") grid.className = "grid-two";
+    grid.style.display = v === "B" ? "" : "flex"; grid.style.flexDirection = "column"; grid.style.gap = "var(--gap)";
+    grid.innerHTML = `
+      <section class="card">
+        <h2 class="card-title">Hourly Forecast</h2>
+        <div style="margin:2px 0 8px;font-size:15px;color:var(--ink2)">${icon} ${cond} · Feels like ${Math.round(s.current.feels)}°</div>
+        <div class="gr" data-graph></div>
+      </section>
+      <section class="card">
+        <h2 class="card-title">10-Day Forecast</h2>
+        <div data-daily></div>
+      </section>`;
+    grid.appendChild(dailyEl());
+    app.appendChild(grid);
+  }
+
+  renderGraph(app.querySelector("[data-graph]"), s.hourly, {
+    curveH: v === "C" ? 220 : 150,
+  });
+  app.appendChild(footEl());
+}
+
+function dailyEl() {
+  const wrap = document.createElement("div");
+  const s = STATE;
+  const gMin = Math.min(...s.daily.map(d => d.min));
+  const gMax = Math.max(...s.daily.map(d => d.max));
+  s.daily.forEach(d => {
+    const row = document.createElement("div");
+    row.className = "day-row";
+    const left = ((d.min - gMin) / (gMax - gMin)) * 100;
+    const width = Math.max(3, ((d.max - d.min) / (gMax - gMin)) * 100);
+    const seg = document.createElement("div");
+    seg.className = "temp-seg";
+    seg.style.left = left + "%"; seg.style.width = width + "%";
+    seg.style.background = `linear-gradient(90deg, ${tempColor(d.min)}, ${tempColor(d.max)})`;
+    const hasCur = d.day === "Today" && d.cur != null;
+    const curLeft = ((d.cur - gMin) / (gMax - gMin)) * 100;
+    row.innerHTML = `
+      <span class="day">${d.day}</span>
+      <span class="icon">${ICON[d.code] ?? "☁️"}${d.pp > 0 ? `<span class="precip">${d.pp}%</span>` : ""}</span>
+      <span class="low">${d.min}°</span>
+      <span class="temp-track">${hasCur ? `<span class="temp-dot" style="left:${curLeft}%"></span>` : ""}</span>
+      <span class="high">${d.max}°</span>`;
+    row.querySelector(".temp-track").appendChild(seg);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+function footEl() {
+  const f = document.createElement("div");
+  f.className = "foot-note";
+  f.innerHTML = `Updated just now · Weather data by <a href="https://open-meteo.com" target="_blank" style="color:var(--ink2)">Open-Meteo.com</a>`;
+  return f;
+}
+
+function meteor() {
+  const s = STATE;
+  const [top, bottom] = skyFor(s.current.code, s.current.isDay);
+  sky.style.background = `linear-gradient(180deg, ${top} 0%, ${bottom} 100%)`;
+}
+
+/* ============ live data ============ */
+async function loadLive() {
+  const sub = document.getElementById("swSub");
+  try {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 6000);
+    const url = "https://api.open-meteo.com/v1/forecast?latitude=55.75&longitude=37.62"
+      + "&current=temperature_2m,apparent_temperature,weather_code,is_day&hourly=temperature_2m,precipitation_probability"
+      + "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+      + "&forecast_days=10&timezone=auto";
+    const r = await fetch(url, { signal: ctl.signal });
+    clearTimeout(to);
+    const j = await r.json();
+    const mkCond = ja => { const ks = Object.keys(ja).filter(k => k.endsWith("_2m") || k === "weather_code" || k.endsWith("_max") || k.endsWith("_min")); return ks; };
+    void mkCond;
+    STATE = {
+      place: { name: "Current location" },
+      current: {
+        temp: j.current.temperature_2m, feels: j.current.apparent_temperature,
+        code: j.current.weather_code, isDay: j.current.is_day,
+      },
+      hourly: j.hourly.time.slice(0, 24).map((t, i) => ({
+        t: t.slice(11, 16), temp: j.hourly.temperature_2m[i], pp: j.hourly.precipitation_probability[i] ?? 0,
+      })),
+      daily: j.daily.time.slice(0, 10).map((t, i) => ({
+        day: i === 0 ? "Today" : ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][(new Date(t + "T12:00:00").getDay() + 6) % 7],
+        code: j.daily.weather_code[i], max: Math.round(j.daily.temperature_2m_max[i]),
+        min: Math.round(j.daily.temperature_2m_min[i]), pp: j.daily.precipitation_probability_max[i] ?? 0,
+        cur: i === 0 ? j.current.temperature_2m : undefined,
+      })),
+      src: "live",
+    };
+    sub.textContent = "data: LIVE Open-Meteo (Moscow)";
+  } catch (e) {
+    STATE.src = "fixture";
+    sub.textContent = "data: fixture (network unavailable)";
+  }
+  render();
+}
+
+/* ============ switcher ============ */
+function setVariant(key) {
+  document.body.dataset.variant = key;
+  const meta = VARIANTS.find(v => v.key === key) || VARIANTS[0];
+  document.getElementById("swLabel").textContent = `${meta.key} · ${meta.name}`;
+  try { history.replaceState(null, "", location.pathname + "?variant=" + key); } catch (e) {}
+  render();
+}
+document.getElementById("prev").onclick = () => {
+  const i = VARIANTS.findIndex(v => v.key === document.body.dataset.variant);
+  setVariant(VARIANTS[(i - 1 + VARIANTS.length) % VARIANTS.length].key);
+};
+document.getElementById("next").onclick = () => {
+  const i = VARIANTS.findIndex(v => v.key === document.body.dataset.variant);
+  setVariant(VARIANTS[(i + 1) % VARIANTS.length].key);
+};
+document.addEventListener("keydown", e => {
+  if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+  if (e.key === "ArrowLeft") document.getElementById("prev").click();
+  if (e.key === "ArrowRight") document.getElementById("next").click();
+});
+window.addEventListener("resize", () => { const g = app.querySelector("[data-graph]"); if (g) render(); });
+
+const startVariant = new URLSearchParams(location.search).get("variant") || "A";
+setVariant(startVariant);
+loadLive();
+</script>
+</body>
+</html>

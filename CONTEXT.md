@@ -19,3 +19,11 @@ _Avoid_: saved city, bookmark, selected location
 **Search empty state**:
 The cold-start state shown when there is no pin yet and geolocation is denied or unavailable: the search box with a gentle prompt to pick a Place. No hardcoded default city exists.
 _Avoid_: fallback city, default location
+
+**Stale data**:
+A cached forecast older than its freshness window, still shown because the network is unavailable or the background refresh has not landed yet. Surfaces as the "Updated … ago" caption, with an explicit offline badge when served without connectivity.
+_Avoid_: old data, outdated data, yesterday's weather
+
+**Refresh**:
+Fetching fresh forecast data — on launch, on pull-to-refresh, or on a ~30-minute timer that only runs while the tab is open and visible. There is no background refresh: a PWA has no scheduler and the Mind One's power management kills background work.
+_Avoid_: auto-update, background sync, periodic fetch
