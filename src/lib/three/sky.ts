@@ -47,6 +47,30 @@ const puffTexture = (
   return t
 }
 
+/** A dark base with soft lighter puffs — the storm-cloud smoke look. */
+const smokeTexture = (): THREE.Texture => {
+  const c = document.createElement('canvas')
+  c.width = c.height = 256
+  const g = c.getContext('2d')!
+  g.fillStyle = '#0a0d14'
+  g.fillRect(0, 0, 256, 256)
+  for (let i = 0; i < 26; i++) {
+    const x = 32 + Math.random() * 192
+    const y = 32 + Math.random() * 192
+    const r = 24 + Math.random() * 60
+    const grad = g.createRadialGradient(x, y, 2, x, y, r)
+    grad.addColorStop(0, 'rgba(255,255,255,0.5)')
+    grad.addColorStop(1, 'rgba(255,255,255,0)')
+    g.fillStyle = grad
+    g.beginPath()
+    g.arc(x, y, r, 0, Math.PI * 2)
+    g.fill()
+  }
+  return new THREE.CanvasTexture(c)
+}
+
+const RAIN_COUNT = 1800
+
 interface WeatherSpec {
   top: string
   bottom: string
@@ -151,6 +175,8 @@ export class Sky {
   private rainMat!: THREE.PointsMaterial
   private snowMat!: THREE.PointsMaterial
   private starMat!: THREE.PointsMaterial
+  private stormClouds = new THREE.Group()
+  private rainVel!: Float32Array
   private raf = 0
   private clock = new THREE.Clock()
   private targets: { px: number; py: number } = { px: 0, py: 0 }
@@ -222,6 +248,37 @@ export class Sky {
     this.starMat = this.starPoints.material as THREE.PointsMaterial
     this.scene.add(this.rain, this.snow, this.starPoints)
 
+    // per-drop rain velocities (gravity accelerates each drop)
+    this.rainVel = new Float32Array(RAIN_COUNT)
+
+    // lit storm-cloud smoke planes — the "rain storm" look (visible on rain)
+    const smoke = smokeTexture()
+    const cloudGeo = new THREE.PlaneGeometry(44, 44)
+    for (let i = 0; i < 20; i++) {
+      const mesh = new THREE.Mesh(
+        cloudGeo,
+        new THREE.MeshLambertMaterial({
+          map: smoke,
+          transparent: true,
+          opacity: 0.55,
+          color: 0x3a4658,
+        }),
+      )
+      mesh.position.set(
+        (Math.random() - 0.5) * 130,
+        12 + Math.random() * 30,
+        -35 - Math.random() * 80,
+      )
+      mesh.rotation.z = Math.random() * Math.PI
+      this.stormClouds.add(mesh)
+    }
+    this.stormClouds.visible = false
+    this.scene.add(this.stormClouds)
+
+    const stormLight = new THREE.DirectionalLight(0xccd8ff, 0.5)
+    stormLight.position.set(-30, 12, 0)
+    this.scene.add(new THREE.AmbientLight(0x5a6b86), stormLight)
+
     this.resize()
     this.ro = new ResizeObserver(() => this.resize())
     this.ro.observe(container)
@@ -250,6 +307,10 @@ export class Sky {
           this.cloudSpec.opacity * (0.5 + 0.5 * Math.sin(t * d.speed + d.phase))
       })
 
+      this.stormClouds.children.forEach((c) => {
+        c.rotation.z -= 0.0003
+      })
+
       this.animateParticles(t)
       this.renderer.render(this.scene, this.camera)
       this.raf = requestAnimationFrame(loop)
@@ -258,19 +319,23 @@ export class Sky {
   }
 
   private makeRain = (): THREE.Points => {
-    const streak = puffTexture('rgba(255,255,255,0.0)', 'rgba(210,225,255,0.9)')
-    const n = 240
+    const streak = puffTexture(
+      'rgba(255,255,255,0.0)',
+      'rgba(215,230,255,0.95)',
+    )
+    const n = RAIN_COUNT
     const pos = new Float32Array(n * 3)
     for (let i = 0; i < n; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 70
-      pos[i * 3 + 1] = (Math.random() - 0.2) * 50
-      pos[i * 3 + 2] = -8 - Math.random() * 30
+      pos[i * 3] = (Math.random() - 0.5) * 90
+      pos[i * 3 + 1] = (Math.random() - 0.2) * 60
+      pos[i * 3 + 2] = -8 - Math.random() * 40
     }
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
     const m = new THREE.PointsMaterial({
-      size: 0.5,
+      size: 0.4,
       map: streak,
+      color: 0xcfe2ff,
       transparent: true,
       opacity: 0,
       depthWrite: false,
@@ -324,15 +389,21 @@ export class Sky {
   /** Interpolate particle Y so rain falls and snow drifts, resetting to top. */
   private animateParticles(t: number): void {
     const dt = this.clock.getDelta()
-    void t
     if (this.particles === 'rain' && this.rain) {
       const attr = this.rain.geometry.getAttribute(
         'position',
       ) as THREE.BufferAttribute
       const a = attr.array as Float32Array
       for (let i = 0; i < a.length; i += 3) {
-        a[i + 1] -= dt * 30
-        if (a[i + 1] < -22) a[i + 1] = 24
+        const idx = i / 3
+        // gravity: each drop accelerates, faster streaks read as hard rain
+        this.rainVel[idx] += dt * (50 + Math.random() * 40)
+        a[i + 1] -= this.rainVel[idx] * dt
+        a[i] += Math.sin(t * 6 + idx) * dt * 0.4
+        if (a[i + 1] < -26) {
+          a[i + 1] = 28
+          this.rainVel[idx] = 0
+        }
       }
       attr.needsUpdate = true
     } else if (this.particles === 'snow' && this.snow) {
@@ -355,6 +426,10 @@ export class Sky {
     this.skyMat.uniforms.uBottom.value.set(spec.bottom)
     this.cloudSpec = { count: spec.cloudCount, opacity: spec.cloudOpacity }
     this.particles = spec.particles
+
+    // storm smoke clouds for rain / showers / thunder
+    this.stormClouds.visible =
+      code >= 95 || (code >= 80 && code <= 82) || (code >= 61 && code <= 65)
 
     this.cloudSprites.forEach((s, i) => {
       s.visible = i < spec.cloudCount
