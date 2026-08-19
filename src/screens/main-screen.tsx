@@ -1,30 +1,22 @@
-import { For } from 'solid-js'
+import { createSignal, Show } from 'solid-js'
 import type { JSX } from '@solidjs/web'
-import { APP_VERSION } from '../lib/version'
+import { useWeather } from '../lib/use-weather.ts'
+import {
+  conditionGlyph,
+  conditionLabel,
+  skyFor,
+} from '../lib/weather/conditions.ts'
+import { placeString } from '../lib/place/store.ts'
+import { APP_VERSION } from '../lib/version.ts'
+import { HourlyGraph } from '../components/hourly-graph.tsx'
+import { TenDay } from '../components/ten-day.tsx'
+import { PlaceSearch } from '../components/place-search.tsx'
+import type { Bootstrap } from '../lib/place/store.ts'
+import type { Forecast as ForecastT } from '../lib/weather/schema.ts'
 
-/**
- * Static first cut of the MVP screen — W5 prototype variant A (Glass faithful)
- * rendered with the W2 design tokens. Data is a tiny fixture for now; the
- * W7 data layer (Effect services + IndexedDB) replaces it in the real build.
- */
-const FIXTURE = {
-  place: { name: 'Current location' },
-  current: { temp: 16, condition: 'Partly Cloudy', hi: 24, lo: 8, feels: 15 },
-  quarter: [
-    { label: 'Feels Like', value: '15°' },
-    { label: 'Wind', value: '12 km/h' },
-    { label: 'Humidity', value: '58%' },
-    { label: 'Pressure', value: '1015 hPa' },
-  ],
-  days: [
-    { day: 'Today', icon: '⛅', pp: 40, min: 8, max: 24 },
-    { day: 'Mon', icon: '🌧️', pp: 70, min: 9, max: 21 },
-    { day: 'Tue', icon: '⛅', pp: 20, min: 10, max: 23 },
-  ],
-}
-
-const skyStyle = (): string => {
-  return 'linear-gradient(180deg, #5b8fc0 0%, #4a7ba8 55%, #3c658f 100%)'
+const skyStyle = (f: ForecastT): string => {
+  const s = skyFor(f.current.code, f.current.isDay)
+  return `linear-gradient(180deg, ${s.top} 0%, ${s.bottom} 100%)`
 }
 
 const Card = (props: { title: string; children: unknown }): JSX.Element => (
@@ -36,75 +28,149 @@ const Card = (props: { title: string; children: unknown }): JSX.Element => (
   </section>
 )
 
-export default function MainScreen() {
-  const d = FIXTURE
+const MetricCard = (props: { title: string; value: string }): JSX.Element => (
+  <Card title={props.title}>
+    <p class="text-[22px] font-medium">{props.value}</p>
+  </Card>
+)
+
+const timeAgo = (fetchedAt: number): string => {
+  const mins = Math.max(0, Math.round((Date.now() - fetchedAt) / 60_000))
+  if (mins < 1) return 'just now'
+  return `${mins} min${mins === 1 ? '' : 's'} ago`
+}
+
+const ForecastView = (props: {
+  b: Bootstrap
+  f: ForecastT
+  stale: boolean
+  offline: boolean
+  onEdit: () => void
+}): JSX.Element => {
+  const cur = props.f.current
+  const title =
+    props.b.kind === 'pin' ? placeString(props.b.place) : 'Current location'
   return (
     <div
       class="mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
-      style={{ background: skyStyle() }}
+      style={{ background: skyStyle(props.f) }}
     >
       <div class="text-center">
-        <span class="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-sm font-medium backdrop-blur-md">
-          📍 {d.place.name}
-        </span>
+        <button
+          type="button"
+          onClick={props.onEdit}
+          class="group inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-sm font-medium backdrop-blur-md"
+        >
+          <span>{title}</span>
+          <span class="text-ink-3 group-hover:text-white">✎</span>
+        </button>
         <div class="mt-1 text-[clamp(96px,28vw,220px)] leading-none font-extralight tracking-[-0.02em]">
-          {d.current.temp}°
+          {Math.round(cur.temp)}°
         </div>
         <div class="text-[30px] font-light">
-          {d.current.condition}
+          {conditionGlyph(cur.code)} {conditionLabel(cur.code)}
           <span class="ml-3 text-[19px] font-normal text-ink-2">
-            H:{d.current.hi}° L:{d.current.lo}°
+            H:
+            {Math.round(Math.max(...props.f.daily.map((d) => d.max)))}° L:
+            {Math.round(Math.min(...props.f.daily.map((d) => d.min)))}°
           </span>
         </div>
       </div>
 
-      <div class="mt-3 grid grid-cols-2 gap-3.5">
-        <For each={d.quarter}>
-          {(m) => (
-            <Card title={m.label}>
-              <p class="text-[22px] font-medium">{m.value}</p>
-            </Card>
-          )}
-        </For>
+      <div class="mt-4 grid grid-cols-2 gap-3.5">
+        <MetricCard title="Feels Like" value={`${Math.round(cur.feels)}°`} />
+        <MetricCard title="Wind" value={`${Math.round(cur.windKmh)} km/h`} />
+        <MetricCard title="Humidity" value={`${Math.round(cur.humidity)}%`} />
+        <MetricCard
+          title="Pressure"
+          value={`${Math.round(cur.pressureHpa)} hPa`}
+        />
       </div>
 
       <div class="mt-3.5">
         <Card title="Hourly Forecast">
-          <p class="text-sm text-ink-2">
-            Scrubbing temperature curve lands here (W5 recipe — hand-rolled
-            SVG).
-          </p>
+          <HourlyGraph forecast={props.f} />
         </Card>
       </div>
 
       <div class="mt-3.5">
         <Card title="10-Day Forecast">
-          <For each={d.days}>
-            {(row) => (
-              <div class="grid grid-cols-[58px_64px_26px_1fr_26px] items-center gap-2 border-t border-white/10 py-2.5 text-[17px] first:border-t-0">
-                <span class="font-medium">{row.day}</span>
-                <span>
-                  {row.icon}
-                  {row.pp > 0 ? (
-                    <span class="ml-1 text-xs font-semibold text-accent-blue">
-                      {row.pp}%
-                    </span>
-                  ) : null}
-                </span>
-                <span class="text-right text-ink-2">{row.min}°</span>
-                <span class="h-1.5 rounded bg-white/15">
-                  <span class="block h-full w-3/4 rounded bg-gradient-to-r from-[#6fb5ff] to-[#ffd26b]" />
-                </span>
-                <span class="text-right font-medium">{row.max}°</span>
-              </div>
-            )}
-          </For>
+          <TenDay days={props.f.daily} currentTemp={cur.temp} />
         </Card>
       </div>
 
       <p class="mt-4 text-center text-xs text-ink-3">
-        Updated just now · Weather data by Open-Meteo.com · {APP_VERSION}
+        <Show when={props.offline}>
+          <span class="font-semibold text-alert-red">Offline · </span>
+        </Show>
+        Updated {timeAgo(props.f.fetchedAt)}
+        {props.stale && !props.offline ? ' · refreshing…' : ''}
+        {' · '}Weather data by Open-Meteo.com · {APP_VERSION}
       </p>
+    </div>
+  )
+}
+
+export default function MainScreen(): JSX.Element {
+  const w = useWeather()
+  const [editing, setEditing] = createSignal(false)
+  const b = w.bootstrap
+  const bKind = (): Bootstrap['kind'] => b().kind
+  const viewing = (): boolean => !editing() && bKind() !== 'search'
+
+  return (
+    <div data-testid="weather-screen" class="min-h-full">
+      <Show
+        when={viewing()}
+        fallback={
+          <div class="mx-auto max-w-[472px] px-4 pt-10 pb-24">
+            <h1 class="mb-1 text-[30px] font-light">Weather</h1>
+            <p class="mb-5 text-[15px] text-ink-2">
+              {editing()
+                ? 'Choose the place to show.'
+                : 'Turn on location, or pin a city below.'}
+            </p>
+            <PlaceSearch
+              onSelect={(place) => {
+                w.pin(place)
+                setEditing(false)
+              }}
+            />
+          </div>
+        }
+      >
+        <Show
+          when={w.data()}
+          fallback={
+            <div class="flex min-h-full items-center justify-center text-ink-2">
+              {w.forecast().kind === 'error' ? (
+                <div class="mx-auto max-w-[472px] px-4 py-24 text-center">
+                  <p class="text-3xl">😕</p>
+                  <p class="mt-2">
+                    Could not load the forecast. Check your connection and try
+                    again.
+                  </p>
+                </div>
+              ) : (
+                <div class="flex flex-col items-center gap-2">
+                  <p class="text-3xl">⛅</p>
+                  <p>Loading forecast…</p>
+                </div>
+              )}
+            </div>
+          }
+        >
+          {(f) => (
+            <ForecastView
+              b={b()}
+              f={f()}
+              stale={w.stale()}
+              offline={w.offline()}
+              onEdit={() => setEditing(true)}
+            />
+          )}
+        </Show>
+      </Show>
     </div>
   )
 }
