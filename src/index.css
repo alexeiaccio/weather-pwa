@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Design tokens from the W2 research (iOS 26/27 Weather visual language). */
+  --color-sky-day: #4a7ba8;
+  --color-sky-day-top: #5b8fc0;
+  --color-sky-day-base: #3c658f;
+  --color-sky-night: #101d2e;
+  --color-sky-night-top: #1a2b3d;
+  --color-sky-night-base: #0d1520;
+  --color-sky-dusk: #2d5580;
+  --color-ink: #ffffff;
+  --color-ink-2: rgba(255, 255, 255, 0.78);
+  --color-ink-3: rgba(255, 255, 255, 0.55);
+  --color-accent-blue: #59a9ff;
+  --color-accent-amber: #ffb340;
+  --color-alert-red: #ff3b30;
+  --color-card: rgba(255, 255, 255, 0.12);
+  --color-card-strong: rgba(255, 255, 255, 0.2);
+  --radius-card: 26px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-sky-night text-ink antialiased;
+  overscroll-behavior: none;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Display', Inter, system-ui,
+    sans-serif;
+}
+
+/* T6 thumb-first: minimum 44px touch targets on the small portrait screen. */
+@utility tap {
+  min-height: 2.75rem;
+}
