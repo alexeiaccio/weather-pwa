@@ -7,6 +7,7 @@ import {
   listPlaces,
   readForecast,
   removePlace,
+  reorderPlaces,
   selectPlace,
   selectedPlace,
   writeForecast,
@@ -46,6 +47,7 @@ export interface WeatherApi {
   readonly add: (place: Place) => void
   readonly remove: (id: number) => void
   readonly select: (id: number | null) => void
+  readonly move: (id: number, dir: -1 | 1) => void
 }
 
 /** Wire the saved-places list (stretch) + place bootstrap + forecast SWR. */
@@ -170,6 +172,18 @@ export const useWeather = (): WeatherApi => {
     void run(selectPlace(id)).catch(() => undefined)
   }
 
+  const move = (id: number, dir: -1 | 1): void => {
+    const prev = places()
+    const idx = prev.findIndex((p) => p.id === id)
+    const j = idx + dir
+    if (idx < 0 || j < 0 || j >= prev.length) return
+    const next = [...prev]
+    const [moved] = next.splice(idx, 1)
+    next.splice(j, 0, moved)
+    setPlaces(next)
+    void run(reorderPlaces(next)).catch(() => undefined)
+  }
+
   return {
     forecast,
     bootstrap,
@@ -182,5 +196,6 @@ export const useWeather = (): WeatherApi => {
     add,
     remove,
     select,
+    move,
   }
 }

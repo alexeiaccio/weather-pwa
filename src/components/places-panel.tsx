@@ -17,6 +17,7 @@ export const PlacesPanel = (props: {
   readonly onSelect: (id: number | null) => void
   readonly onRemove: (id: number) => void
   readonly onAdd: (place: Place) => void
+  readonly onMove: (id: number, dir: -1 | 1) => void
 }): JSX.Element => {
   const [adding, setAdding] = createSignal(false)
   const select = (place: Place | null): void => {
@@ -59,32 +60,55 @@ export const PlacesPanel = (props: {
           </button>
 
           <For each={props.places}>
-            {(place) => (
-              <div
-                class={`flex items-center gap-1 rounded-2xl text-white ${
-                  props.selected?.id === place.id ? 'bg-white/20' : ''
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => select(place)}
-                  class="tap flex-1 px-3 py-2.5 text-left text-[16px] font-medium hover:bg-white/10"
+            {(place, i) => {
+              const count = props.places.length
+              return (
+                <div
+                  class={`flex items-center gap-1 rounded-2xl text-white ${
+                    props.selected?.id === place.id ? 'bg-white/20' : ''
+                  }`}
                 >
-                  {placeString(place)}
-                  <Show when={props.selected?.id === place.id}>
-                    <span class="ml-2 text-xs text-ink-3">active</span>
-                  </Show>
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Remove ${place.name}`}
-                  onClick={() => props.onRemove(place.id)}
-                  class="tap pr-3 text-ink-3 hover:text-white"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
+                  <button
+                    type="button"
+                    onClick={() => select(place)}
+                    class="tap flex-1 px-3 py-2.5 text-left text-[16px] font-medium hover:bg-white/10"
+                  >
+                    {placeString(place)}
+                    <Show when={props.selected?.id === place.id}>
+                      <span class="ml-2 text-xs text-ink-3">active</span>
+                    </Show>
+                  </button>
+                  <div class="flex flex-col pr-1">
+                    <button
+                      type="button"
+                      aria-label={`Move ${place.name} up`}
+                      onClick={() => props.onMove(place.id, -1)}
+                      disabled={i() === 0}
+                      class="h-5 w-6 text-ink-3 hover:text-white disabled:opacity-30"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Move ${place.name} down`}
+                      onClick={() => props.onMove(place.id, 1)}
+                      disabled={i() === count - 1}
+                      class="h-5 w-6 text-ink-3 hover:text-white disabled:opacity-30"
+                    >
+                      ▼
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${place.name}`}
+                    onClick={() => props.onRemove(place.id)}
+                    class="tap pr-3 text-ink-3 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )
+            }}
           </For>
 
           <Show when={adding} fallback={null}>

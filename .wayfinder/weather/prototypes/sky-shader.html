@@ -225,16 +225,11 @@ void main(){
     sky = mix(u_colBase, u_colHorizon, pow(f, 1.15));
   }
 
-  // ---- horizon haze + warm dusk bloom ----
-  float hz = exp(-pow((v_uv.y - horizonY) * 9.0, 2.0));
-  sky += u_colHorizon * hz * 0.18;
-  sky += vec3(1.0, 0.82, 0.55) * hz * 0.10 * u_duskMix;
-
   // ---- stars (night only) ----
   float starMask = smoothstep(0.72, 0.95, u_nightMix) * u_stars;
   sky += vec3(1.0) * star(v_uv * vec2(190.0 * aspect, 95.0), 3.7) * starMask;
 
-  // ---- sun disc + glow (moon-glow variant at night) ----
+  // ---- sun disc + glow (moon-glow variant at night); added AFTER the tonemap ----
   vec2  sp   = (u_sun - v_uv) * vec2(aspect, 1.0);
   float sd   = length(sp);
   float core = exp(-sd * sd * 260.0);
@@ -242,8 +237,6 @@ void main(){
   // disc color: golden at low sun, white-ish at noon; moon-pale at night
   vec3 sunTint = mix(vec3(1.0, 0.86, 0.62), vec3(1.0, 0.97, 0.90), smoothstep(0.0, 0.55, u_sunAlt));
   sunTint = mix(sunTint, vec3(0.80, 0.88, 1.0), u_nightMix * 0.7);
-  sky += sunTint * (core * 0.95 + glow * 0.30) * u_warmSun * (1.0 - u_flatness);
-  sky += vec3(0.80, 0.88, 1.0) * (core * 0.5 + glow * 0.35) * u_moon;
 
   // ---- soft animated clouds: two fbm layers drifting at different speeds ----
   float t = u_time;
@@ -254,8 +247,8 @@ void main(){
   c2 = smoothstep(0.46, 0.86, c2);
   float cloud = mix(c1 * 0.5, c2, 0.5) * u_cloudAmt;
   cloud *= 0.55 + 0.75 * smoothstep(0.04, 0.30, v_uv.y);   // fewer clouds below horizon
-  float lit  = 0.30 + 0.70 * u_dayMix;                     // clouds dim at night
-  vec3 cloudC = mix(vec3(0.23, 0.30, 0.40), vec3(1.02, 1.05, 1.10), u_dayMix);
+  float lit  = 0.24 + 0.76 * u_dayMix;                     // clouds dim at night
+  vec3 cloudC = mix(vec3(0.18, 0.24, 0.33), vec3(1.02, 1.05, 1.10), u_dayMix);
   cloudC += sunTint * glow * u_warmSun * 0.35;             // sunlit clouds near the disc
   cloudC *= lit;
   sky = mix(sky, cloudC, clamp(cloud * 0.85, 0.0, 1.0));
@@ -263,8 +256,14 @@ void main(){
   // ---- flat-sky override (thunderstorm ships a flat sky in the W2 research) ----
   sky = mix(sky, u_colFlat, u_flatness);
 
-  // gentle tone map so the sun core never clips to a white blowout
+  // tone-map the atmosphere, THEN add painterly glow so light sources punch through
   sky = sky / (sky + vec3(0.55)) * 1.06;
+  float hz = exp(-pow((v_uv.y - horizonY) * 9.0, 2.0));
+  sky += vec3(1.0, 0.82, 0.55) * hz * 0.22 * u_duskMix * (1.0 - u_flatness);              // warm dusk bloom
+  sky += u_colHorizon * hz * 0.10 * (0.35 + 0.65 * u_dayMix) * (0.4 + 0.6 * (1.0 - u_nightMix)); // horizon haze
+  sky += sunTint * (core * 0.55 + glow * 0.22) * u_warmSun * (1.0 - u_flatness);
+  sky += vec3(0.80, 0.88, 1.0) * (core * 0.25 + glow * 0.18) * u_moon;
+  sky = clamp(sky, 0.0, 1.0);
 
   %COLOR% = vec4(sky, 1.0);
 }`;
@@ -362,7 +361,7 @@ function model(condIdx, sunAlt, forceNight){
     dm, du, nm,
     top, horiz, base, flat,
     warm: c.warm * ss(-0.02, 0.06, sunAlt),
-    moon: nm * (c.stars || 0) * 0.18,
+    moon: nm * (c.stars || 0) * 0.12,
     cloud: c.cloud, flatness: c.flat, stars: c.stars,
   };
 }
@@ -382,7 +381,7 @@ let autoplay = true;
 let theta = 75;                  // current sun angle in degrees (slider domain 0..180)
 autoBtn.checked = autoplay;
 
-const PHASE = m => m.nm > m.du && m.nm >= m.dm ? "Night" : (m.dm > m.du ? "Day" : "Dusk");
+const PHASE = (m, el) => el < -1 ? "Night" : (el < 20 ? "Dawn/Dusk" : "Day");
 
 function computeSky(tMs, alt){  // shared by GL path and CSS fallback
   const m = model(+select.value, alt, CONDITIONS[+select.value].id === "night");
@@ -392,7 +391,7 @@ function computeSky(tMs, alt){  // shared by GL path and CSS fallback
   const cond = CONDITIONS[+select.value];
   const altDeg = Math.round(Math.asin(Math.max(-1, Math.min(1, alt))) * 180 / Math.PI);
   readout.textContent =
-    `${cond.label} · sun elev ${altDeg >= 0 ? "+" : "−"}${Math.abs(altDeg)}° · ${PHASE(m)} · ` +
+    `${cond.label} · sun elev ${altDeg >= 0 ? "+" : "−"}${Math.abs(altDeg)}° · ${PHASE(m, altDeg)} · ` +
     `day ${(m.dm * 100) | 0}%`;
   return m;
 }

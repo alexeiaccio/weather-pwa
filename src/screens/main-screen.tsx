@@ -10,6 +10,7 @@ import { placeString } from '../lib/place/store.ts'
 import { APP_VERSION } from '../lib/version.ts'
 import { HourlyGraph } from '../components/hourly-graph.tsx'
 import { TenDay } from '../components/ten-day.tsx'
+import { RadarMap } from '../components/radar-map.tsx'
 import { PlaceSearch } from '../components/place-search.tsx'
 import { PlacesPanel } from '../components/places-panel.tsx'
 import type { Bootstrap } from '../lib/place/store.ts'
@@ -52,6 +53,12 @@ const ForecastView = (props: {
   const cur = props.f.current
   const title =
     props.b.kind === 'pin' ? placeString(props.b.place) : 'Current location'
+  const center =
+    props.b.kind === 'pin'
+      ? { lat: props.b.place.latitude, lon: props.b.place.longitude }
+      : props.b.kind === 'current'
+        ? { lat: props.b.latitude, lon: props.b.longitude }
+        : undefined
   return (
     <div
       class="mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
@@ -109,6 +116,16 @@ const ForecastView = (props: {
         </Card>
       </div>
 
+      <Show when={center} fallback={null}>
+        {(c) => (
+          <div class="mt-3.5">
+            <Card title="Precipitation">
+              <RadarMap lat={c().lat} lon={c().lon} />
+            </Card>
+          </div>
+        )}
+      </Show>
+
       <p class="mt-4 text-center text-xs text-ink-3">
         <Show when={props.offline}>
           <span class="font-semibold text-alert-red">Offline · </span>
@@ -139,6 +156,7 @@ export default function MainScreen(): JSX.Element {
         onSelect={(id) => w.select(id)}
         onRemove={(id) => w.remove(id)}
         onAdd={(place) => w.add(place)}
+        onMove={(id, dir) => w.move(id, dir)}
       />
       <Show
         when={viewing()}

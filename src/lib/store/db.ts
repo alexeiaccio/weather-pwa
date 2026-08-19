@@ -177,6 +177,20 @@ export const addPlace = (place: Place): Effect.Effect<void, StorageError> =>
 export const removePlace = (id: number): Effect.Effect<void, StorageError> =>
   withDb((qb) => qb.from(SAVED_STORE).delete().equals(String(id)))
 
+/** Rewrite the saved-places order (list order == the given array order). */
+export const reorderPlaces = (
+  places: readonly Place[],
+): Effect.Effect<void, StorageError> =>
+  withDb((qb) =>
+    qb.from(SAVED_STORE).upsertAll(
+      places.map((place, order) => ({
+        key: String(place.id),
+        place,
+        order,
+      })),
+    ),
+  )
+
 /** The active saved-place id, or null when "Current location" is active. */
 export const selectedId = (): Effect.Effect<number | null, StorageError> =>
   withDb((qb) => qb.from(SELECTION_STORE).select().equals('selection')).pipe(
