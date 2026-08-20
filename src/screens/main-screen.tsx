@@ -13,7 +13,6 @@ import { useAtmosphere } from '../lib/use-atmosphere.ts'
 import { HourlyGraph } from '../components/hourly-graph.tsx'
 import { TenDay } from '../components/ten-day.tsx'
 import { RadarMap } from '../components/radar-map.tsx'
-import { Sky3D } from '../components/sky-3d.tsx'
 import { PlaceSearch } from '../components/place-search.tsx'
 import { PlacesPanel } from '../components/places-panel.tsx'
 import type { Bootstrap } from '../lib/place/store.ts'
@@ -81,8 +80,7 @@ const ForecastView = (props: {
       class="relative mx-auto min-h-full w-full max-w-[472px] px-4 pt-10 pb-24"
       style={{ background: skyStyle(props.f) }}
     >
-      {/* Animated Three.js sky; the CSS gradient above is its fallback. */}
-      <Sky3D code={cur.code} isDay={cur.isDay} />
+      {/* The CSS gradient (above) is the sky; atmos-fx adds foreground precipitation. */}
       <div class="relative z-10">
         <button
           type="button"
